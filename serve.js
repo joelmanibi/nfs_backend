@@ -1,27 +1,56 @@
-var express = require('express');
-const cors = require("cors");
-// const client = require('./config/redis.config');
+'use strict';
 
-var app = express();
-var corsOptions = {
-    origin: "*"
+const { loadVaultSecrets } = require('./config/vault');
+
+function createApp() {
+  const express = require('express');
+  const cors = require('cors');
+  const bodyParser = require('body-parser');
+  const db = require('./src/models');
+
+  const app = express();
+  const corsOptions = {
+    origin: '*',
   };
-app.use(cors(corsOptions));
-const bodyParser = require('body-parser');
 
-const db = require("./src/models");
-db.sequelize.sync();
+  app.use(cors(corsOptions));
+  db.sequelize.sync();
+  app.use(bodyParser.json());
+  app.use(bodyParser.urlencoded({ extended: true }));
+  app.use('/static', express.static('assets'));
 
-app.use(bodyParser.json());
+  require('./src/routes')(app);
 
-app.use(bodyParser.urlencoded({extended:true}));
+  return app;
+}
 
-app.use('/static', express.static('assets'));
+async function startServer() {
+  await loadVaultSecrets();
 
-require('./src/routes')(app);
+  const app = createApp();
+  const port = process.env.PORT || 8000;
 
-const PORT = process.env.PORT || 8000;
-app.listen(PORT,'0.0.0.0', function () {
-    console.log(`App listening on port ${PORT}`);
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, '0.0.0.0', () => {
+      console.log(`App listening on port ${port}`);
+      resolve({ app, server });
     });
-module.exports = app;
+
+    server.on('error', reject);
+  });
+}
+
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error(`[startup] ${error.message}`);
+    if (error.stack) {
+      console.error(error.stack);
+    }
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  createApp,
+  startServer,
+};

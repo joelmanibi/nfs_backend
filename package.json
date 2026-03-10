@@ -3,7 +3,15 @@
   "version": "1.0.0",
   "main": "serve.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node serve.js",
+    "dev": "nodemon serve.js",
+    "test": "node --test tests/vault.test.js tests/antivirus.test.js tests/mailer.test.js tests/audit.test.js",
+    "migrate": "sequelize-cli db:migrate",
+    "seed": "sequelize-cli db:seed --seed 20260303000001-admin-user.js",
+    "migrate:undo": "sequelize-cli db:migrate:undo:all",
+    "migrate:vault": "node scripts/withVault.js sequelize-cli db:migrate",
+    "seed:vault": "node scripts/withVault.js sequelize-cli db:seed --seed 20260303000001-admin-user.js",
+    "migrate:undo:vault": "node scripts/withVault.js sequelize-cli db:migrate:undo:all"
   },
   "author": "JOEL MANI",
   "license": "ISC",

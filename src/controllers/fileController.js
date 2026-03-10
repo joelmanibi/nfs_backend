@@ -8,14 +8,27 @@ const { promisify }                       = require('util');
 const bcrypt                              = require('bcryptjs');
 const { File }                            = require('../models');
 const { encryptToFile, createDecipherStream } = require('../../helpers/crypto');
+const { scanBuffer }                      = require('../../helpers/antivirus');
+const { sendFileReceivedEmail }           = require('../../helpers/mailer');
 const logger                              = require('../../config/logger');
 
 const pipelineAsync   = promisify(pipeline);
 const ENCRYPTED_DIR   = path.resolve('assets', 'encrypted');
 const BCRYPT_ROUNDS   = 12;
 
+const buildAuditMeta = (req, extra = {}) => ({
+  userId: req.user?.id,
+  userEmail: req.user?.email?.toLowerCase(),
+  ip: req.ip,
+  userAgent: req.get('user-agent'),
+  ...extra,
+});
+
 // ─── Upload ───────────────────────────────────────────────────────────────────
 const uploadFile = async (req, res) => {
+  let encryptedPath = null;
+  let recordPersisted = false;
+
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'Aucun fichier fourni.' });
@@ -28,27 +41,91 @@ const uploadFile = async (req, res) => {
     }
 
     const protected_ = isProtected === 'true' || isProtected === true;
+    const normalizedReceiverEmail = receiverEmail.toLowerCase().trim();
+    const normalizedDownloadCode = protected_ ? downloadCode?.trim() : null;
 
-    if (protected_ && !downloadCode?.trim()) {
+    const uploadMeta = buildAuditMeta(req, {
+      receiverEmail: normalizedReceiverEmail,
+      originalName: req.file.originalname,
+      size: req.file.size,
+      mimetype: req.file.mimetype,
+      isProtected: protected_,
+    });
+
+    if (protected_ && !normalizedDownloadCode) {
       return res.status(400).json({ message: 'downloadCode requis pour un fichier protégé.' });
+    }
+
+    logger.info('Antivirus scan started', {
+      event: 'antivirus_scan_started',
+      ...uploadMeta,
+    });
+
+    const scanResult = await scanBuffer(req.file.buffer);
+    const scanMeta = {
+      ...uploadMeta,
+      event: `antivirus_scan_${scanResult.status}`,
+      antivirusHost: scanResult.config.host,
+      antivirusPort: scanResult.config.port,
+      antivirusFailOnError: scanResult.config.failOnError,
+      antivirusEnabled: scanResult.config.enabled,
+    };
+
+    if (scanResult.status === 'infected') {
+      logger.warn('Antivirus detected malware', {
+        ...scanMeta,
+        threat: scanResult.threat,
+        rawResponse: scanResult.rawResponse,
+      });
+
+      return res.status(422).json({ message: 'Le fichier a été rejeté par l’antivirus.' });
+    }
+
+    if (scanResult.status === 'error') {
+      logger[scanResult.config.failOnError ? 'error' : 'warn']('Antivirus scan failed', {
+        ...scanMeta,
+        error: scanResult.error,
+        fallbackToUpload: !scanResult.config.failOnError,
+      });
+
+      if (scanResult.config.failOnError) {
+        return res.status(503).json({
+          message: 'Le service antivirus est indisponible. Réessayez plus tard.',
+        });
+      }
+    }
+
+    if (scanResult.status === 'clean') {
+      logger.info('Antivirus scan clean', {
+        ...scanMeta,
+        rawResponse: scanResult.rawResponse,
+      });
+    }
+
+    if (scanResult.status === 'skipped') {
+      logger.warn('Antivirus scan skipped', {
+        ...scanMeta,
+        reason: scanResult.reason,
+      });
     }
 
     // ── ID partagé entre nom de fichier sur disque et PK en DB ──
     const fileId  = randomUUID();
     const destPath = path.join(ENCRYPTED_DIR, fileId);
+    encryptedPath = destPath;
 
     // ── Chiffrement AES-256-CBC (buffer mémoire → disque chiffré) ──
     const iv = encryptToFile(req.file.buffer, destPath);
 
     // ── Hash du code de protection ──
     const downloadCodeHash = protected_
-      ? await bcrypt.hash(downloadCode.trim(), BCRYPT_ROUNDS)
+      ? await bcrypt.hash(normalizedDownloadCode, BCRYPT_ROUNDS)
       : null;
 
     const record = await File.create({
       id:            fileId,
       senderId:      req.user.id,
-      receiverEmail: receiverEmail.toLowerCase().trim(),
+      receiverEmail: normalizedReceiverEmail,
       originalName:  req.file.originalname,
       encryptedPath: destPath,
       size:          req.file.size,
@@ -56,14 +133,46 @@ const uploadFile = async (req, res) => {
       downloadCodeHash,
       iv,
     });
+    recordPersisted = true;
 
     logger.info('File uploaded', {
+      event:         'file_upload_succeeded',
       fileId:        record.id,
       senderId:      req.user.id,
       receiverEmail: record.receiverEmail,
+      originalName:  record.originalName,
       size:          record.size,
       isProtected:   record.isProtected,
+      scanStatus:    scanResult.status,
+      ip:            req.ip,
     });
+
+    try {
+      await sendFileReceivedEmail({
+        to: record.receiverEmail,
+        fileId: record.id,
+        senderEmail: req.user.email,
+        originalName: record.originalName,
+        size: record.size,
+        isProtected: record.isProtected,
+        downloadCode: normalizedDownloadCode,
+      });
+
+      logger.info('Recipient notification email sent', {
+        event: 'file_recipient_email_sent',
+        fileId: record.id,
+        receiverEmail: record.receiverEmail,
+        includesDownloadCode: Boolean(normalizedDownloadCode),
+      });
+    } catch (mailError) {
+      logger.error('Recipient notification email failed', {
+        event: 'file_recipient_email_failed',
+        fileId: record.id,
+        receiverEmail: record.receiverEmail,
+        includesDownloadCode: Boolean(normalizedDownloadCode),
+        error: mailError.message,
+      });
+    }
 
     return res.status(201).json({
       message: 'Fichier envoyé avec succès.',
@@ -77,7 +186,28 @@ const uploadFile = async (req, res) => {
       },
     });
   } catch (err) {
-    logger.error('Upload error', { error: err.message, userId: req.user?.id });
+    if (encryptedPath && !recordPersisted && fs.existsSync(encryptedPath)) {
+      try {
+        fs.unlinkSync(encryptedPath);
+      } catch (cleanupError) {
+        logger.error('Encrypted upload cleanup failed', {
+          event: 'file_upload_cleanup_failed',
+          encryptedPath,
+          error: cleanupError.message,
+        });
+      }
+    }
+
+    logger.error('Upload error', {
+      event: 'file_upload_failed',
+      error: err.message,
+      ...buildAuditMeta(req, {
+        receiverEmail: req.body?.receiverEmail,
+        originalName: req.file?.originalname,
+        size: req.file?.size,
+      }),
+    });
+
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };
@@ -88,34 +218,76 @@ const downloadFile = async (req, res) => {
     const { id }           = req.params;
     const { downloadCode } = req.body;
 
+    logger.info('File download attempt', {
+      event: 'file_download_attempt',
+      ...buildAuditMeta(req, { fileId: id }),
+    });
+
     const file = await File.findByPk(id);
     if (!file) {
+      logger.warn('File download target not found', {
+        event: 'file_download_not_found',
+        ...buildAuditMeta(req, { fileId: id }),
+      });
+
       return res.status(404).json({ message: 'Fichier introuvable.' });
     }
 
+    const downloadMeta = buildAuditMeta(req, {
+      fileId: id,
+      receiverEmail: file.receiverEmail,
+      originalName: file.originalName,
+      size: file.size,
+      isProtected: file.isProtected,
+    });
+
     // Seul le destinataire peut télécharger
     if (file.receiverEmail !== req.user.email.toLowerCase()) {
+      logger.warn('File download denied', {
+        event: 'file_download_denied',
+        ...downloadMeta,
+        reason: 'recipient_mismatch',
+      });
+
       return res.status(403).json({ message: 'Accès refusé.' });
     }
 
     // Vérification du code pour les fichiers protégés
     if (file.isProtected) {
       if (!downloadCode?.trim()) {
+        logger.warn('File download code missing', {
+          event: 'file_download_code_missing',
+          ...downloadMeta,
+        });
+
         return res.status(400).json({ message: 'Ce fichier est protégé. Fournissez le downloadCode.' });
       }
+
       const valid = await bcrypt.compare(downloadCode.trim(), file.downloadCodeHash);
       if (!valid) {
-        logger.warn('Invalid downloadCode', { fileId: id, userId: req.user.id });
+        logger.warn('Invalid downloadCode', {
+          event: 'file_download_code_invalid',
+          ...downloadMeta,
+        });
+
         return res.status(401).json({ message: 'Code de téléchargement invalide.' });
       }
     }
 
     if (!fs.existsSync(file.encryptedPath)) {
-      logger.error('Encrypted file missing', { fileId: id });
+      logger.error('Encrypted file missing', {
+        event: 'file_download_storage_missing',
+        ...downloadMeta,
+        encryptedPath: file.encryptedPath,
+      });
+
       return res.status(500).json({ message: 'Fichier physique introuvable.' });
     }
 
-    logger.info('File downloaded', { fileId: id, userId: req.user.id });
+    logger.info('File download started', {
+      event: 'file_download_started',
+      ...downloadMeta,
+    });
 
     // ── Streaming déchiffrement → client (jamais persisté en clair) ──
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.originalName)}"`);
@@ -125,8 +297,18 @@ const downloadFile = async (req, res) => {
     const decipherStream = createDecipherStream(file.iv);
 
     await pipelineAsync(readStream, decipherStream, res);
+
+    logger.info('File download succeeded', {
+      event: 'file_download_succeeded',
+      ...downloadMeta,
+    });
   } catch (err) {
-    logger.error('Download error', { error: err.message, userId: req.user?.id });
+    logger.error('Download error', {
+      event: 'file_download_failed',
+      error: err.message,
+      ...buildAuditMeta(req, { fileId: req.params?.id }),
+    });
+
     if (!res.headersSent) {
       return res.status(500).json({ message: 'Erreur interne.', error: err.message });
     }
