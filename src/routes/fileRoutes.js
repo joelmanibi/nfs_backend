@@ -9,6 +9,7 @@ const {
   getInbox,
   getSent,
 } = require('../controllers/fileController');
+const { createShareLink } = require('../controllers/shareController');
 
 const router = Router();
 
@@ -17,13 +18,15 @@ router.use(verifyToken);
 
 // ─── Upload ───────────────────────────────────────────────────────────────────
 // POST /api/files/upload
-// Body (multipart/form-data): file, receiverEmail, isProtected?, downloadCode?
 router.post('/upload', upload.single('file'), uploadFile);
 
 // ─── Download ─────────────────────────────────────────────────────────────────
 // POST /api/files/:id/download
-// Body (JSON): { downloadCode? }
 router.post('/:id/download', downloadFile);
+
+// ─── Share link ───────────────────────────────────────────────────────────────
+// POST /api/files/:id/share
+router.post('/:id/share', createShareLink);
 
 // ─── Inbox / Sent ─────────────────────────────────────────────────────────────
 // GET /api/files/inbox

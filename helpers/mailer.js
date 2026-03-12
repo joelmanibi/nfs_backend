@@ -153,11 +153,121 @@ const sendFileReceivedEmail = (payload) =>
     },
   });
 
+// ── Email avec lien de téléchargement public ─────────────────────────────────
+const buildShareLinkEmail = ({
+  to,
+  senderEmail,
+  originalName,
+  size,
+  isProtected,
+  downloadCode,
+  shareUrl,
+  expiresAt,
+}) => {
+  const safeFileName   = escapeHtml(originalName);
+  const safeSender     = escapeHtml(senderEmail);
+  const formattedSize  = formatFileSize(size);
+  const safeCode       = downloadCode ? escapeHtml(downloadCode) : null;
+  const safeUrl        = escapeHtml(shareUrl);
+  const formattedDate  = new Date(expiresAt).toLocaleString('fr-FR', {
+    day: '2-digit', month: 'long', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+
+  return {
+    to,
+    subject: `${senderEmail} vous a partagé un fichier : ${originalName}`,
+    text: [
+      `Vous avez reçu un fichier via ${APP_NAME}.`,
+      `Expéditeur : ${senderEmail}`,
+      `Nom : ${originalName}`,
+      `Taille : ${formattedSize}`,
+      `Lien de téléchargement : ${shareUrl}`,
+      `Valide jusqu'au : ${formattedDate}`,
+      isProtected && downloadCode
+        ? `Code de téléchargement : ${downloadCode}`
+        : '',
+    ].filter(Boolean).join('\n'),
+    html: `
+      <p>Vous avez reçu un fichier via <strong>${APP_NAME}</strong>.</p>
+      <p><strong>Expéditeur :</strong> ${safeSender}</p>
+      <p><strong>Nom du fichier :</strong> ${safeFileName}</p>
+      <p><strong>Taille :</strong> ${escapeHtml(formattedSize)}</p>
+      <p style="margin-top:16px">
+        <a href="${safeUrl}" style="display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">
+          ⬇ Télécharger le fichier
+        </a>
+      </p>
+      <p style="font-size:12px;color:#888">
+        Ce lien expire le <strong>${formattedDate}</strong>.
+      </p>
+      ${isProtected && safeCode
+        ? `<p><strong>Code de téléchargement :</strong></p><h2 style="letter-spacing:4px">${safeCode}</h2>`
+        : ''}
+    `,
+  };
+};
+
+const sendShareLinkEmail = (payload) =>
+  sendMail(buildShareLinkEmail(payload), {
+    mailType: 'file_share_link',
+    extra: {
+      senderEmail: normalizeEmail(payload.senderEmail),
+      fileId: payload.fileId,
+      originalName: payload.originalName,
+      size: payload.size,
+      isProtected: Boolean(payload.isProtected),
+    },
+  });
+
+// ── Email de réinitialisation de mot de passe ────────────────────────────────
+const buildPasswordResetEmail = ({ to, firstName, resetUrl, expiryMinutes }) => {
+  const safeName    = escapeHtml(firstName || 'utilisateur');
+  const safeUrl     = escapeHtml(resetUrl);
+  const safeExpiry  = escapeHtml(String(expiryMinutes || 30));
+
+  return {
+    to,
+    subject: `${APP_NAME} — Réinitialisation de votre mot de passe`,
+    text: [
+      `Bonjour ${firstName || ''},`,
+      '',
+      'Vous avez demandé la réinitialisation de votre mot de passe NFS.',
+      `Cliquez sur le lien suivant pour en définir un nouveau (valable ${expiryMinutes} minutes) :`,
+      resetUrl,
+      '',
+      'Si vous n\'avez pas effectué cette demande, ignorez cet email.',
+    ].join('\n'),
+    html: `
+      <p>Bonjour <strong>${safeName}</strong>,</p>
+      <p>Vous avez demandé la réinitialisation de votre mot de passe <strong>${APP_NAME}</strong>.</p>
+      <p style="margin-top:16px">
+        <a href="${safeUrl}" style="display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">
+          🔑 Réinitialiser mon mot de passe
+        </a>
+      </p>
+      <p style="font-size:12px;color:#888">
+        Ce lien expire dans <strong>${safeExpiry} minutes</strong>. Si vous n'avez pas effectué cette demande, ignorez cet email.
+      </p>
+    `,
+  };
+};
+
+const sendPasswordResetEmail = (payload) =>
+  sendMail(buildPasswordResetEmail(payload), {
+    mailType: 'password_reset',
+    extra: { recipientEmail: normalizeEmail(payload.to) },
+  });
+
 module.exports = {
   buildMailLogMeta,
   buildFileReceivedEmail,
+  buildShareLinkEmail,
   buildOTPEmail,
+  buildPasswordResetEmail,
   formatFileSize,
   sendFileReceivedEmail,
+  sendShareLinkEmail,
   sendOTPEmail,
+  sendPasswordResetEmail,
 };

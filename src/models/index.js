@@ -14,13 +14,17 @@ const sequelize = new Sequelize(
 );
 
 // --- Model imports ---
-const User = require('./User')(sequelize, Sequelize.DataTypes);
-const OTP  = require('./OTP')(sequelize, Sequelize.DataTypes);
-const File = require('./File')(sequelize, Sequelize.DataTypes);
+const User      = require('./User')(sequelize, Sequelize.DataTypes);
+const OTP       = require('./OTP')(sequelize, Sequelize.DataTypes);
+const File      = require('./File')(sequelize, Sequelize.DataTypes);
+const ShareLink = require('./ShareLink')(sequelize, Sequelize.DataTypes);
 
 // --- Associations ---
 User.hasMany(File, { foreignKey: 'senderId', as: 'sentFiles' });
 File.belongsTo(User, { foreignKey: 'senderId', as: 'sender' });
+
+File.hasMany(ShareLink, { foreignKey: 'fileId', as: 'shareLinks', onDelete: 'CASCADE' });
+ShareLink.belongsTo(File, { foreignKey: 'fileId', as: 'file' });
 
 const db = {
   sequelize,
@@ -28,6 +32,7 @@ const db = {
   User,
   OTP,
   File,
+  ShareLink,
 };
 
 module.exports = db;

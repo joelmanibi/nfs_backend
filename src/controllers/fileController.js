@@ -6,11 +6,14 @@ const { randomUUID }                      = require('crypto');
 const { pipeline }                        = require('stream');
 const { promisify }                       = require('util');
 const bcrypt                              = require('bcryptjs');
-const { File }                            = require('../models');
+const { File, ShareLink, sequelize }      = require('../models');
 const { encryptToFile, createDecipherStream } = require('../../helpers/crypto');
 const { scanBuffer }                      = require('../../helpers/antivirus');
-const { sendFileReceivedEmail }           = require('../../helpers/mailer');
+const { sendFileReceivedEmail, sendShareLinkEmail } = require('../../helpers/mailer');
 const logger                              = require('../../config/logger');
+
+const FRONTEND_URL   = process.env.FRONTEND_URL || 'http://localhost:3000';
+const MAX_LINK_HOURS = 30 * 24; // 720 h
 
 const pipelineAsync   = promisify(pipeline);
 const ENCRYPTED_DIR   = path.resolve('assets', 'encrypted');
@@ -26,26 +29,54 @@ const buildAuditMeta = (req, extra = {}) => ({
 
 // ─── Upload ───────────────────────────────────────────────────────────────────
 const uploadFile = async (req, res) => {
-  let encryptedPath = null;
-  let recordPersisted = false;
+  let encryptedPath  = null;
+  let anyPersisted   = false;
 
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'Aucun fichier fourni.' });
     }
 
-    const { receiverEmail, isProtected, downloadCode } = req.body;
+    const {
+      receiverEmail,
+      receiverEmails: receiverEmailsRaw,
+      isProtected,
+      downloadCode,
+      sendViaLink,
+      linkExpiresInHours: rawLinkHours,
+    } = req.body;
 
-    if (!receiverEmail?.trim()) {
-      return res.status(400).json({ message: 'receiverEmail est requis.' });
+    // ── Normalisation des destinataires ───────────────────────────────────────
+    let emailList = [];
+    if (receiverEmailsRaw) {
+      try {
+        const parsed = JSON.parse(receiverEmailsRaw);
+        emailList = Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        emailList = [receiverEmailsRaw];
+      }
+    } else if (receiverEmail) {
+      emailList = [receiverEmail];
     }
 
-    const protected_ = isProtected === 'true' || isProtected === true;
-    const normalizedReceiverEmail = receiverEmail.toLowerCase().trim();
+    emailList = [...new Set(
+      emailList.map((e) => String(e).toLowerCase().trim()).filter(Boolean)
+    )];
+
+    if (!emailList.length) {
+      return res.status(400).json({ message: 'Au moins un email destinataire est requis.' });
+    }
+
+    const protected_            = isProtected === 'true' || isProtected === true;
     const normalizedDownloadCode = protected_ ? downloadCode?.trim() : null;
+    const viaLink               = sendViaLink === 'true' || sendViaLink === true;
+    const linkHours             = Math.min(
+      parseInt(rawLinkHours, 10) || 24,
+      MAX_LINK_HOURS,
+    );
 
     const uploadMeta = buildAuditMeta(req, {
-      receiverEmail: normalizedReceiverEmail,
+      receiverEmails: emailList,
       originalName: req.file.originalname,
       size: req.file.size,
       mimetype: req.file.mimetype,
@@ -109,87 +140,115 @@ const uploadFile = async (req, res) => {
       });
     }
 
-    // ── ID partagé entre nom de fichier sur disque et PK en DB ──
-    const fileId  = randomUUID();
-    const destPath = path.join(ENCRYPTED_DIR, fileId);
-    encryptedPath = destPath;
-
-    // ── Chiffrement AES-256-CBC (buffer mémoire → disque chiffré) ──
-    const iv = encryptToFile(req.file.buffer, destPath);
+    // ── Chiffrement (une seule fois, partagé entre tous les destinataires) ──
+    const sharedFileId = randomUUID();
+    const destPath     = path.join(ENCRYPTED_DIR, sharedFileId);
+    encryptedPath      = destPath;
+    const iv           = encryptToFile(req.file.buffer, destPath);
 
     // ── Hash du code de protection ──
     const downloadCodeHash = protected_
       ? await bcrypt.hash(normalizedDownloadCode, BCRYPT_ROUNDS)
       : null;
 
-    const record = await File.create({
-      id:            fileId,
-      senderId:      req.user.id,
-      receiverEmail: normalizedReceiverEmail,
-      originalName:  req.file.originalname,
-      encryptedPath: destPath,
-      size:          req.file.size,
-      isProtected:   protected_,
-      downloadCodeHash,
-      iv,
-    });
-    recordPersisted = true;
-
-    logger.info('File uploaded', {
-      event:         'file_upload_succeeded',
-      fileId:        record.id,
-      senderId:      req.user.id,
-      receiverEmail: record.receiverEmail,
-      originalName:  record.originalName,
-      size:          record.size,
-      isProtected:   record.isProtected,
-      scanStatus:    scanResult.status,
-      ip:            req.ip,
-    });
-
+    // ── Création des enregistrements DB dans une transaction ──────────────────
+    const createdRecords = [];
+    const t = await sequelize.transaction();
     try {
-      await sendFileReceivedEmail({
-        to: record.receiverEmail,
-        fileId: record.id,
-        senderEmail: req.user.email,
-        originalName: record.originalName,
-        size: record.size,
-        isProtected: record.isProtected,
-        downloadCode: normalizedDownloadCode,
-      });
+      for (const email of emailList) {
+        const fileId = randomUUID();
+        const record = await File.create({
+          id:            fileId,
+          senderId:      req.user.id,
+          receiverEmail: email,
+          originalName:  req.file.originalname,
+          encryptedPath: destPath,
+          size:          req.file.size,
+          isProtected:   protected_,
+          downloadCodeHash,
+          iv,
+        }, { transaction: t });
 
-      logger.info('Recipient notification email sent', {
-        event: 'file_recipient_email_sent',
-        fileId: record.id,
-        receiverEmail: record.receiverEmail,
-        includesDownloadCode: Boolean(normalizedDownloadCode),
-      });
-    } catch (mailError) {
-      logger.error('Recipient notification email failed', {
-        event: 'file_recipient_email_failed',
-        fileId: record.id,
-        receiverEmail: record.receiverEmail,
-        includesDownloadCode: Boolean(normalizedDownloadCode),
-        error: mailError.message,
-      });
+        let shareLink = null;
+        if (viaLink) {
+          const token     = randomUUID().replace(/-/g, '');
+          const expiresAt = new Date(Date.now() + linkHours * 3600 * 1000);
+          shareLink = await ShareLink.create({ fileId, token, expiresAt }, { transaction: t });
+        }
+
+        createdRecords.push({ record, shareLink });
+      }
+      await t.commit();
+      anyPersisted = true;
+    } catch (dbErr) {
+      await t.rollback();
+      throw dbErr;
+    }
+
+    logger.info('File(s) uploaded', {
+      event:      'file_upload_succeeded',
+      sharedFileId,
+      senderId:   req.user.id,
+      recipients: emailList,
+      originalName: req.file.originalname,
+      size:       req.file.size,
+      isProtected: protected_,
+      viaLink,
+    });
+
+    // ── Envoi des emails (hors transaction — l'upload est considéré réussi) ──
+    for (const { record, shareLink } of createdRecords) {
+      try {
+        if (viaLink && shareLink) {
+          const shareUrl = `${FRONTEND_URL}/download/${shareLink.token}`;
+          await sendShareLinkEmail({
+            to: record.receiverEmail,
+            fileId: record.id,
+            senderEmail: req.user.email,
+            originalName: record.originalName,
+            size: record.size,
+            isProtected: record.isProtected,
+            downloadCode: normalizedDownloadCode,
+            shareUrl,
+            expiresAt: shareLink.expiresAt,
+          });
+        } else {
+          await sendFileReceivedEmail({
+            to: record.receiverEmail,
+            fileId: record.id,
+            senderEmail: req.user.email,
+            originalName: record.originalName,
+            size: record.size,
+            isProtected: record.isProtected,
+            downloadCode: normalizedDownloadCode,
+          });
+        }
+      } catch (mailError) {
+        logger.error('Recipient notification email failed', {
+          event: 'file_recipient_email_failed',
+          fileId: record.id,
+          receiverEmail: record.receiverEmail,
+          error: mailError.message,
+        });
+      }
     }
 
     return res.status(201).json({
-      message: 'Fichier envoyé avec succès.',
-      file: {
+      message: `Fichier envoyé à ${createdRecords.length} destinataire(s).`,
+      files: createdRecords.map(({ record, shareLink }) => ({
         id:            record.id,
         originalName:  record.originalName,
         size:          record.size,
         isProtected:   record.isProtected,
         receiverEmail: record.receiverEmail,
         createdAt:     record.createdAt,
-      },
+        shareToken:    shareLink?.token ?? null,
+        shareExpiresAt: shareLink?.expiresAt ?? null,
+      })),
     });
   } catch (err) {
-    if (encryptedPath && !recordPersisted && fs.existsSync(encryptedPath)) {
-      try {
-        fs.unlinkSync(encryptedPath);
-      } catch (cleanupError) {
+    if (encryptedPath && !anyPersisted && fs.existsSync(encryptedPath)) {
+      try { fs.unlinkSync(encryptedPath); } catch (cleanupError) {
         logger.error('Encrypted upload cleanup failed', {
           event: 'file_upload_cleanup_failed',
           encryptedPath,
@@ -202,7 +261,6 @@ const uploadFile = async (req, res) => {
       event: 'file_upload_failed',
       error: err.message,
       ...buildAuditMeta(req, {
-        receiverEmail: req.body?.receiverEmail,
         originalName: req.file?.originalname,
         size: req.file?.size,
       }),

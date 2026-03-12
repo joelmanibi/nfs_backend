@@ -44,6 +44,21 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: 'USER',
       },
+      passwordHash: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+        defaultValue: null,
+      },
+      resetTokenHash: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+        defaultValue: null,
+      },
+      resetTokenExpiresAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        defaultValue: null,
+      },
     },
     {
       sequelize,
