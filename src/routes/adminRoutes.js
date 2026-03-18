@@ -12,6 +12,9 @@ const {
   getActiveTransfers,
   getAuditLogs,
   deleteTransfer,
+  getPendingUsers,
+  approveUser,
+  rejectUser,
 } = require('../controllers/adminController');
 
 const router = Router();
@@ -34,6 +37,11 @@ router.delete('/transfers/:id',  deleteTransfer);
 
 // Audit logs
 router.get('/audit', getAuditLogs);
+
+// Pending users
+router.get('/users/pending',          getPendingUsers);
+router.patch('/users/:id/approve',    approveUser);
+router.delete('/users/:id/reject',    rejectUser);
 
 module.exports = router;
 

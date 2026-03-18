@@ -8,7 +8,7 @@ Le backend peut maintenant charger ses secrets depuis HashiCorp Vault avant de d
 - `VAULT_ENABLED=true`
 - `VAULT_ADDR=https://vault.mon-domaine.tld`
 - `VAULT_TOKEN=...`
-- `VAULT_SECRET_PATH=secret/data/nfs-backend/production`
+- `VAULT_SECRET_PATH=secret/data/NFS-backend/production`
 - `VAULT_KV_VERSION=2`
 
 Variables optionnelles :
@@ -44,11 +44,11 @@ Le secret Vault doit contenir les mêmes clés que les variables d'environnement
 
 Si ton moteur KV est monté sur `secret/`, le chemin API attendu pour la prod est typiquement :
 
-- `secret/data/nfs-backend/production`
+- `secret/data/NFS-backend/production`
 
 Exemple de commande Vault :
 
-- `vault kv put secret/nfs-backend/production JWT_SECRET="..." DB_USER="..." DB_PASSWORD="..." FILE_ENCRYPTION_KEY="..."`
+- `vault kv put secret/NFS-backend/production JWT_SECRET="..." DB_USER="..." DB_PASSWORD="..." FILE_ENCRYPTION_KEY="..."`
 
 ### 4. Démarrage du backend
 

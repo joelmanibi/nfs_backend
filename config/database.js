@@ -4,7 +4,7 @@ module.exports = {
   development: {
     username: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'nfs',
+    database: process.env.DB_NAME || 'NFS',
     host: process.env.DB_HOST || 'localhost',
     port: process.env.DB_PORT || 3306,
     dialect: 'mysql',
@@ -16,12 +16,21 @@ module.exports = {
       idle: 10000,
     },
     timezone: '+00:00',
+    dialectOptions: {
+      // mysql2 v3 fix: cast TINYINT(1) → boolean (affects DataTypes.BOOLEAN fields)
+      typeCast: function (field, next) {
+        if (field.type === 'TINY' && field.length === 1) {
+          return field.string() === '1';
+        }
+        return next();
+      },
+    },
   },
   test: {
     username: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME_TEST || 'nfs_test',
-    host: process.env.DB_HOST || 'localhost',
+    database: process.env.DB_NAME_TEST || 'NFS_test',
+    host: process.env.DB_HOST || '10.112.30.143',
     port: process.env.DB_PORT || 3306,
     dialect: 'mysql',
     logging: false,

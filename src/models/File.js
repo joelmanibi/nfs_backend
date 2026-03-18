@@ -46,6 +46,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: false,
       },
+      isBlocked: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+      },
       downloadCodeHash: {
         type: DataTypes.STRING,
         allowNull: true,
@@ -53,6 +58,11 @@ module.exports = (sequelize, DataTypes) => {
       iv: {
         type: DataTypes.STRING,
         allowNull: false,
+      },
+      comment: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        defaultValue: null,
       },
     },
     {

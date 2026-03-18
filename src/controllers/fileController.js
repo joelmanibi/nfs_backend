@@ -12,7 +12,7 @@ const { scanBuffer }                      = require('../../helpers/antivirus');
 const { sendFileReceivedEmail, sendShareLinkEmail } = require('../../helpers/mailer');
 const logger                              = require('../../config/logger');
 
-const FRONTEND_URL   = process.env.FRONTEND_URL || 'http://localhost:3000';
+const FRONTEND_URL   = process.env.FRONTEND_URL || 'http://10.112.30.143:3000';
 const MAX_LINK_HOURS = 30 * 24; // 720 h
 
 const pipelineAsync   = promisify(pipeline);
@@ -44,6 +44,7 @@ const uploadFile = async (req, res) => {
       downloadCode,
       sendViaLink,
       linkExpiresInHours: rawLinkHours,
+      comment,
     } = req.body;
 
     // ── Normalisation des destinataires ───────────────────────────────────────
@@ -167,6 +168,7 @@ const uploadFile = async (req, res) => {
           isProtected:   protected_,
           downloadCodeHash,
           iv,
+          comment:       comment?.trim() || null,
         }, { transaction: t });
 
         let shareLink = null;
@@ -199,28 +201,40 @@ const uploadFile = async (req, res) => {
     // ── Envoi des emails (hors transaction — l'upload est considéré réussi) ──
     for (const { record, shareLink } of createdRecords) {
       try {
+        const senderName         = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim();
+        const senderPhone        = req.user.phone || null;
+        const senderOrganisation = req.user.organisation || null;
+
         if (viaLink && shareLink) {
           const shareUrl = `${FRONTEND_URL}/download/${shareLink.token}`;
           await sendShareLinkEmail({
             to: record.receiverEmail,
             fileId: record.id,
             senderEmail: req.user.email,
+            senderName,
+            senderPhone,
+            senderOrganisation,
             originalName: record.originalName,
             size: record.size,
             isProtected: record.isProtected,
             downloadCode: normalizedDownloadCode,
             shareUrl,
             expiresAt: shareLink.expiresAt,
+            comment: comment?.trim() || null,
           });
         } else {
           await sendFileReceivedEmail({
             to: record.receiverEmail,
             fileId: record.id,
             senderEmail: req.user.email,
+            senderName,
+            senderPhone,
+            senderOrganisation,
             originalName: record.originalName,
             size: record.size,
             isProtected: record.isProtected,
             downloadCode: normalizedDownloadCode,
+            comment: comment?.trim() || null,
           });
         }
       } catch (mailError) {
@@ -298,6 +312,15 @@ const downloadFile = async (req, res) => {
       size: file.size,
       isProtected: file.isProtected,
     });
+
+    // L'expéditeur a bloqué le fichier
+    if (file.isBlocked) {
+      logger.warn('File download blocked by sender', {
+        event: 'file_download_blocked',
+        ...buildAuditMeta(req, { fileId: id }),
+      });
+      return res.status(403).json({ message: 'Ce fichier a été bloqué par l\'expéditeur.' });
+    }
 
     // Seul le destinataire peut télécharger
     if (file.receiverEmail !== req.user.email.toLowerCase()) {
@@ -403,5 +426,66 @@ const getSent = async (req, res) => {
   }
 };
 
-module.exports = { uploadFile, downloadFile, getInbox, getSent };
+// ─── Bloquer / Débloquer un fichier envoyé ────────────────────────────────────
+const blockFile = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const file = await File.findByPk(id);
+
+    if (!file) return res.status(404).json({ message: 'Fichier introuvable.' });
+    if (file.senderId !== req.user.id)
+      return res.status(403).json({ message: 'Accès refusé.' });
+
+    file.isBlocked = !file.isBlocked;
+    await file.save();
+
+    logger.info(file.isBlocked ? 'File blocked' : 'File unblocked', {
+      event: file.isBlocked ? 'file_blocked' : 'file_unblocked',
+      ...buildAuditMeta(req, { fileId: id }),
+    });
+
+    return res.json({ isBlocked: file.isBlocked });
+  } catch (err) {
+    logger.error('blockFile error', { error: err.message });
+    return res.status(500).json({ message: 'Erreur interne.' });
+  }
+};
+
+// ─── Supprimer un fichier envoyé ─────────────────────────────────────────────
+const deleteFile = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const file = await File.findByPk(id);
+
+    if (!file) return res.status(404).json({ message: 'Fichier introuvable.' });
+    if (file.senderId !== req.user.id)
+      return res.status(403).json({ message: 'Accès refusé.' });
+
+    const encPath = file.encryptedPath;
+
+    // Vérifier si d'autres fichiers partagent le même chemin physique
+    const siblingsCount = await File.count({ where: { encryptedPath: encPath } });
+
+    await file.destroy();
+
+    // Supprimer le fichier physique seulement si c'était le dernier lien vers lui
+    if (siblingsCount <= 1 && fs.existsSync(encPath)) {
+      try { fs.unlinkSync(encPath); } catch (e) {
+        logger.warn('Physical file deletion failed', { encPath, error: e.message });
+      }
+    }
+
+    logger.info('File deleted by sender', {
+      event: 'file_deleted_by_sender',
+      ...buildAuditMeta(req, { fileId: id }),
+    });
+
+    return res.json({ message: 'Fichier supprimé.' });
+  } catch (err) {
+    logger.error('deleteFile error', { error: err.message });
+    return res.status(500).json({ message: 'Erreur interne.' });
+  }
+};
+
+module.exports = { uploadFile, downloadFile, getInbox, getSent, blockFile, deleteFile };
 

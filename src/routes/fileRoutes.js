@@ -8,6 +8,8 @@ const {
   downloadFile,
   getInbox,
   getSent,
+  blockFile,
+  deleteFile,
 } = require('../controllers/fileController');
 const { createShareLink } = require('../controllers/shareController');
 
@@ -34,6 +36,13 @@ router.get('/inbox', getInbox);
 
 // GET /api/files/sent
 router.get('/sent', getSent);
+
+// ─── Sender actions ───────────────────────────────────────────────────────────
+// PATCH /api/files/:id/block  (toggle bloquer/débloquer)
+router.patch('/:id/block', blockFile);
+
+// DELETE /api/files/:id
+router.delete('/:id', deleteFile);
 
 module.exports = router;
 

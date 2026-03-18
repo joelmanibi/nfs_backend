@@ -4,7 +4,7 @@ const nodemailer = require('nodemailer');
 const logger = require('../config/logger');
 const { normalizeEmail } = require('./audit');
 
-const APP_NAME = 'NFS';
+const APP_NAME = 'IDS Secure Transport';
 
 const escapeHtml = (value) => String(value)
   .replace(/&/g, '&amp;')
@@ -84,7 +84,7 @@ const sendMail = async (message, logContext = {}) => {
 
 const buildOTPEmail = ({ email, otp, expiryMinutes }) => ({
   to: email,
-  subject: 'Votre code de connexion NFS',
+  subject: 'Votre code de connexion IDS Secure Transport',
   text: `Votre code OTP : ${otp}. Valide ${expiryMinutes} minutes.`,
   html: `
     <p>Votre code de connexion :</p>
@@ -97,38 +97,59 @@ const buildOTPEmail = ({ email, otp, expiryMinutes }) => ({
 const buildFileReceivedEmail = ({
   to,
   senderEmail,
+  senderName,
+  senderPhone,
+  senderOrganisation,
   originalName,
   size,
   isProtected,
   downloadCode,
+  comment,
 }) => {
-  const safeFileName = escapeHtml(originalName);
-  const safeSenderEmail = escapeHtml(senderEmail);
-  const formattedSize = formatFileSize(size);
+  const safeName         = escapeHtml(senderName || senderEmail);
+  const safePhone        = escapeHtml(senderPhone || '\u2014');
+  const safeOrg          = escapeHtml(senderOrganisation || '\u2014');
+  const safeFileName     = escapeHtml(originalName);
+  const formattedSize    = formatFileSize(size);
   const safeDownloadCode = downloadCode ? escapeHtml(downloadCode) : null;
+  const safeComment      = comment ? escapeHtml(comment) : null;
 
   return {
     to,
-    subject: `Nouveau fichier reçu : ${originalName}`,
+    subject: `Vous avez recu un fichier via IDS Secure Transport`,
     text: [
-      `Vous avez reçu un fichier via ${APP_NAME}.`,
-      `Expéditeur : ${senderEmail}`,
-      `Nom du fichier : ${originalName}`,
-      `Taille : ${formattedSize}`,
-      isProtected && downloadCode
-        ? `Code de téléchargement : ${downloadCode}`
-        : 'Aucun code de téléchargement n’est requis pour ce fichier.',
-      'Connectez-vous à la plateforme pour le télécharger.',
-    ].join('\n'),
+      'Bonjour,',
+      '',
+      'Vous avez recu un ou plusieurs fichiers de :',
+      `<< ${senderName || senderEmail} >>`,
+      `<< ${senderPhone || '\u2014'} >>`,
+      `<< ${senderOrganisation || '\u2014'} >>`,
+      '',
+      `Nom du fichier : ${originalName} (${formattedSize})`,
+      '',
+      "Connectez-vous a la plateforme pour le telecharger.",
+      '',
+      comment ? `<< ${comment} >>` : '',
+      '',
+      isProtected && downloadCode ? `Code de telechargement requis : ${downloadCode}` : '',
+      '',
+      "Important : ce lien est susceptible d'etre valide pour une duree limitee et de requerir un mot de passe specifique.",
+    ].filter((l) => l !== undefined).join('\n'),
     html: `
-      <p>Vous avez reçu un fichier via <strong>${APP_NAME}</strong>.</p>
-      <p><strong>Expéditeur :</strong> ${safeSenderEmail}</p>
-      <p><strong>Nom du fichier :</strong> ${safeFileName}</p>
-      <p><strong>Taille :</strong> ${escapeHtml(formattedSize)}</p>
+      <p>Bonjour,</p>
+      <p>Vous avez recu un ou plusieurs fichiers de :</p>
+      <p style="margin:8px 0 4px;font-weight:600">&laquo; ${safeName} &raquo;</p>
+      <p style="margin:2px 0 4px;color:#555">&laquo; ${safePhone} &raquo;</p>
+      <p style="margin:2px 0 12px;color:#555">&laquo; ${safeOrg} &raquo;</p>
+      <p>Le fichier <strong>${safeFileName}</strong> (${escapeHtml(formattedSize)}) est disponible sur la plateforme.</p>
+      <p>Connectez-vous pour le telecharger.</p>
+      ${safeComment ? `<p style="margin-top:12px;font-style:italic;color:#444">&laquo; ${safeComment} &raquo;</p>` : ''}
       ${isProtected && safeDownloadCode
-        ? `<p><strong>Code de téléchargement :</strong></p><h2 style="letter-spacing:4px">${safeDownloadCode}</h2>`
-        : '<p>Aucun code de téléchargement n’est requis pour ce fichier.</p>'}
-      <p>Connectez-vous à la plateforme pour le télécharger.</p>
+        ? `<p style="margin-top:12px"><strong>Code de telechargement requis :</strong></p><h2 style="letter-spacing:4px">${safeDownloadCode}</h2>`
+        : ''}
+      <p style="margin-top:16px;font-size:12px;color:#888">
+        <strong>Important :</strong> ce lien est susceptible d&#39;etre valide pour une duree limitee et de requerir un mot de passe specifique.
+      </p>
     `,
   };
 };
@@ -157,18 +178,25 @@ const sendFileReceivedEmail = (payload) =>
 const buildShareLinkEmail = ({
   to,
   senderEmail,
+  senderName,
+  senderPhone,
+  senderOrganisation,
   originalName,
   size,
   isProtected,
   downloadCode,
   shareUrl,
   expiresAt,
+  comment,
 }) => {
+  const safeName       = escapeHtml(senderName || senderEmail);
+  const safePhone      = escapeHtml(senderPhone || '—');
+  const safeOrg        = escapeHtml(senderOrganisation || '—');
   const safeFileName   = escapeHtml(originalName);
-  const safeSender     = escapeHtml(senderEmail);
   const formattedSize  = formatFileSize(size);
   const safeCode       = downloadCode ? escapeHtml(downloadCode) : null;
   const safeUrl        = escapeHtml(shareUrl);
+  const safeComment    = comment ? escapeHtml(comment) : null;
   const formattedDate  = new Date(expiresAt).toLocaleString('fr-FR', {
     day: '2-digit', month: 'long', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
@@ -176,34 +204,42 @@ const buildShareLinkEmail = ({
 
   return {
     to,
-    subject: `${senderEmail} vous a partagé un fichier : ${originalName}`,
+    subject: `Vous avez reçu un fichier via IDS Secure Transport`,
     text: [
-      `Vous avez reçu un fichier via ${APP_NAME}.`,
-      `Expéditeur : ${senderEmail}`,
-      `Nom : ${originalName}`,
-      `Taille : ${formattedSize}`,
-      `Lien de téléchargement : ${shareUrl}`,
-      `Valide jusqu'au : ${formattedDate}`,
-      isProtected && downloadCode
-        ? `Code de téléchargement : ${downloadCode}`
-        : '',
-    ].filter(Boolean).join('\n'),
+      'Bonjour,',
+      '',
+      'Vous avez reçu un ou plusieurs fichiers de :',
+      `« ${senderName || senderEmail} »`,
+      `« ${senderPhone || '—'} »`,
+      `« ${senderOrganisation || '—'} »`,
+      '',
+      'Le lien ci-dessous vous permet d\'accéder à un contenu en téléchargement.',
+      '',
+      shareUrl,
+      '',
+      comment ? `« ${comment} »` : '',
+      '',
+      isProtected && downloadCode ? `Code de téléchargement requis : ${downloadCode}` : '',
+      '',
+      'Important : ce lien est susceptible d\'être valide pour une durée limitée et de requérir un mot de passe spécifique.',
+    ].filter((l) => l !== undefined).join('\n'),
     html: `
-      <p>Vous avez reçu un fichier via <strong>${APP_NAME}</strong>.</p>
-      <p><strong>Expéditeur :</strong> ${safeSender}</p>
-      <p><strong>Nom du fichier :</strong> ${safeFileName}</p>
-      <p><strong>Taille :</strong> ${escapeHtml(formattedSize)}</p>
-      <p style="margin-top:16px">
-        <a href="${safeUrl}" style="display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">
-          ⬇ Télécharger le fichier
-        </a>
+      <p>Bonjour,</p>
+      <p>Vous avez reçu un ou plusieurs fichiers de :</p>
+      <p style="margin:8px 0 4px;font-weight:600">« ${safeName} »</p>
+      <p style="margin:2px 0 4px;color:#555">« ${safePhone} »</p>
+      <p style="margin:2px 0 12px;color:#555">« ${safeOrg} »</p>
+      <p>Le lien ci-dessous vous permet d'accéder à un contenu en téléchargement.</p>
+      <p style="margin:12px 0">
+        <a href="${shareUrl}" style="color:#2563eb;word-break:break-all">${safeUrl}</a>
       </p>
-      <p style="font-size:12px;color:#888">
-        Ce lien expire le <strong>${formattedDate}</strong>.
-      </p>
+      ${safeComment ? `<p style="margin-top:12px;font-style:italic;color:#444">« ${safeComment} »</p>` : ''}
       ${isProtected && safeCode
-        ? `<p><strong>Code de téléchargement :</strong></p><h2 style="letter-spacing:4px">${safeCode}</h2>`
+        ? `<p style="margin-top:12px"><strong>Code de téléchargement requis :</strong></p><h2 style="letter-spacing:4px">${safeCode}</h2>`
         : ''}
+      <p style="margin-top:16px;font-size:12px;color:#888">
+        <strong>Important :</strong> ce lien est susceptible d'être valide pour une durée limitée et de requérir un mot de passe spécifique.
+      </p>
     `,
   };
 };
@@ -220,6 +256,71 @@ const sendShareLinkEmail = (payload) =>
     },
   });
 
+// ── Email notification compte en attente (vers admins) ──────────────────────
+const buildAccountPendingEmail = ({ firstName, lastName, email, organisation, country, isInternalUser }) => {
+  const safeName  = escapeHtml(`${firstName} ${lastName}`);
+  const safeEmail = escapeHtml(email);
+  const safeOrg   = escapeHtml(organisation || '—');
+  const safeCountry = escapeHtml(country || '—');
+  const adminUrl  = `${process.env.FRONTEND_URL || 'http://10.112.30.143:3000'}/admin/users`;
+
+  return {
+    to: process.env.ADMIN_NOTIFICATION_EMAIL || process.env.GMAIL_USER,
+    subject: `[IDS Secure Transport] Nouveau compte en attente d'approbation — ${safeEmail}`,
+    text: `Un nouveau compte vient d'être créé et attend votre validation.\nNom : ${firstName} ${lastName}\nEmail : ${email}\nOrganisation : ${organisation}\nPays : ${country}\nUtilisateur interne : ${isInternalUser ? 'Oui' : 'Non'}\n\nValidez le compte ici : ${adminUrl}`,
+    html: `
+      <p>Un nouveau compte vient d'être créé et attend votre validation.</p>
+      <table style="border-collapse:collapse;width:100%;max-width:480px">
+        <tr><td style="padding:4px 8px;color:#666;font-size:13px">Nom</td><td style="padding:4px 8px;font-weight:600">${safeName}</td></tr>
+        <tr><td style="padding:4px 8px;color:#666;font-size:13px">Email</td><td style="padding:4px 8px">${safeEmail}</td></tr>
+        <tr><td style="padding:4px 8px;color:#666;font-size:13px">Organisation</td><td style="padding:4px 8px">${safeOrg}</td></tr>
+        <tr><td style="padding:4px 8px;color:#666;font-size:13px">Pays</td><td style="padding:4px 8px">${safeCountry}</td></tr>
+        <tr><td style="padding:4px 8px;color:#666;font-size:13px">Interne</td><td style="padding:4px 8px">${isInternalUser ? '✅ Oui' : '❌ Non'}</td></tr>
+      </table>
+      <p style="margin-top:16px">
+        <a href="${adminUrl}" style="display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">
+          Gérer les comptes en attente
+        </a>
+      </p>
+    `,
+  };
+};
+
+const buildAccountApprovedEmail = ({ firstName, email }) => ({
+  to: email,
+  subject: `[IDS Secure Transport] Votre compte a été approuvé`,
+  text: `Bonjour ${firstName},\n\nVotre compte IDS Secure Transport a été approuvé. Vous pouvez maintenant vous connecter.\n${process.env.FRONTEND_URL || 'http://10.112.30.143:3000'}/login`,
+  html: `
+    <p>Bonjour <strong>${escapeHtml(firstName)}</strong>,</p>
+    <p>Votre compte <strong>IDS Secure Transport</strong> a été approuvé par un administrateur. Vous pouvez maintenant accéder à la plateforme.</p>
+    <p style="margin-top:16px">
+      <a href="${process.env.FRONTEND_URL || 'http://10.112.30.143:3000'}/login" style="display:inline-block;padding:10px 20px;background:#16a34a;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">
+        ✅ Accéder à la plateforme
+      </a>
+    </p>
+  `,
+});
+
+const buildAccountRejectedEmail = ({ firstName, email }) => ({
+  to: email,
+  subject: `[IDS Secure Transport] Votre demande de compte`,
+  text: `Bonjour ${firstName},\n\nNous avons examiné votre demande de compte IDS Secure Transport. Malheureusement, nous ne sommes pas en mesure de l'approuver pour le moment. Contactez l'équipe pour plus d'informations.`,
+  html: `
+    <p>Bonjour <strong>${escapeHtml(firstName)}</strong>,</p>
+    <p>Nous avons examiné votre demande d'accès à la plateforme <strong>IDS Secure Transport</strong>. Malheureusement, nous ne sommes pas en mesure de l'approuver pour le moment.</p>
+    <p style="font-size:13px;color:#666">Si vous pensez qu'il s'agit d'une erreur, veuillez contacter l'équipe d'administration.</p>
+  `,
+});
+
+const sendAccountPendingEmail = (payload) =>
+  sendMail(buildAccountPendingEmail(payload), { mailType: 'account_pending' });
+
+const sendAccountApprovedEmail = (payload) =>
+  sendMail(buildAccountApprovedEmail(payload), { mailType: 'account_approved' });
+
+const sendAccountRejectedEmail = (payload) =>
+  sendMail(buildAccountRejectedEmail(payload), { mailType: 'account_rejected' });
+
 // ── Email de réinitialisation de mot de passe ────────────────────────────────
 const buildPasswordResetEmail = ({ to, firstName, resetUrl, expiryMinutes }) => {
   const safeName    = escapeHtml(firstName || 'utilisateur');
@@ -232,7 +333,7 @@ const buildPasswordResetEmail = ({ to, firstName, resetUrl, expiryMinutes }) => 
     text: [
       `Bonjour ${firstName || ''},`,
       '',
-      'Vous avez demandé la réinitialisation de votre mot de passe NFS.',
+      'Vous avez demandé la réinitialisation de votre mot de passe IDS Secure Transport.',
       `Cliquez sur le lien suivant pour en définir un nouveau (valable ${expiryMinutes} minutes) :`,
       resetUrl,
       '',
@@ -265,9 +366,15 @@ module.exports = {
   buildShareLinkEmail,
   buildOTPEmail,
   buildPasswordResetEmail,
+  buildAccountPendingEmail,
+  buildAccountApprovedEmail,
+  buildAccountRejectedEmail,
   formatFileSize,
   sendFileReceivedEmail,
   sendShareLinkEmail,
   sendOTPEmail,
   sendPasswordResetEmail,
+  sendAccountPendingEmail,
+  sendAccountApprovedEmail,
+  sendAccountRejectedEmail,
 };

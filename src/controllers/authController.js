@@ -15,7 +15,7 @@ const OTP_EXPIRY_MS        = 10 * 60 * 1000;  // 10 min
 const RESET_TOKEN_EXPIRY_MS = 30 * 60 * 1000; // 30 min
 const OTP_MAX_ATTEMPTS     = 5;
 const BCRYPT_ROUNDS        = 12;
-const FRONTEND_URL         = process.env.FRONTEND_URL || 'http://localhost:3000';
+const FRONTEND_URL         = process.env.FRONTEND_URL || 'http://10.112.30.143:3000';
 
 // ─── Password strength (server-side mirror of frontend rules) ─────────────────
 // Minimum acceptable: 8+ chars, at least 2 of {upper, lower, digit, special}
@@ -45,72 +45,98 @@ const buildAuthMeta = (req, extra = {}) => buildRequestAuditMeta(req, {
  * POST /api/auth/register
  */
 const register = async (req, res) => {
-  const { firstName, lastName, email, phone, city, password } = req.body;
+  const { firstName, lastName, email, phone, city, password, organisation, country, isInternalUser } = req.body;
   const normalizedEmail = normalizeEmail(email);
 
   try {
-    if (!firstName?.trim() || !lastName?.trim() || !normalizedEmail) {
+    // ── Champs obligatoires ────────────────────────────────────────────────────
+    const missing = [];
+    if (!firstName?.trim()) missing.push('prénom');
+    if (!lastName?.trim())  missing.push('nom');
+    if (!normalizedEmail)   missing.push('email');
+    if (!phone?.trim())     missing.push('téléphone');
+    if (!organisation?.trim()) missing.push('organisation');
+    if (!country?.trim())   missing.push('pays');
+    if (!password)          missing.push('mot de passe');
+
+    if (missing.length) {
       logger.warn('Registration validation failed', {
         event: 'auth_register_validation_failed',
         ...buildAuthMeta(req),
+        missing,
       });
-
-      return res.status(400).json({ message: 'firstName, lastName et email sont requis.' });
+      return res.status(400).json({
+        message: `Champs obligatoires manquants : ${missing.join(', ')}.`,
+      });
     }
 
-    // Validate password if provided
-    let passwordHash = null;
-    if (password) {
-      const score = evaluatePassword(password);
-      if (score < PASSWORD_MIN_SCORE) {
-        return res.status(400).json({
-          message: 'Mot de passe trop faible. Utilisez au moins 8 caractères avec majuscules, minuscules, chiffres ou caractères spéciaux.',
-        });
-      }
-      passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    // ── Validation mot de passe ────────────────────────────────────────────────
+    const score = evaluatePassword(password);
+    if (score < PASSWORD_MIN_SCORE) {
+      return res.status(400).json({
+        message: 'Mot de passe trop faible. Utilisez au moins 8 caractères avec majuscules, minuscules, chiffres ou caractères spéciaux.',
+      });
     }
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
+    // ── Doublon email ──────────────────────────────────────────────────────────
     const exists = await User.findOne({ where: { email: normalizedEmail } });
     if (exists) {
       logger.warn('Registration rejected for duplicate email', {
         event: 'auth_register_duplicate_email',
         ...buildAuthMeta(req),
       });
-
       return res.status(409).json({ message: 'Cet email est déjà enregistré.' });
     }
 
     const user = await User.create({
-      firstName: firstName.trim(),
-      lastName:  lastName.trim(),
-      email:     normalizedEmail,
-      phone:     phone?.trim() || null,
-      city:      city?.trim()  || null,
+      firstName:      firstName.trim(),
+      lastName:       lastName.trim(),
+      email:          normalizedEmail,
+      phone:          phone.trim(),
+      city:           city?.trim() || null,
+      organisation:   organisation.trim(),
+      country:        country.trim(),
+      isInternalUser: Boolean(isInternalUser),
+      isApproved:     false,
       passwordHash,
     });
 
-    logger.info('Account created', {
+    logger.info('Account created — pending approval', {
       event: 'auth_register_succeeded',
       ...buildAuthMeta(req, {
-        createdUserId: user.id,
-        role: user.role,
+        createdUserId:  user.id,
+        role:           user.role,
+        isInternalUser: user.isInternalUser,
       }),
     });
 
+    // Notifier les admins (best-effort)
+    try {
+      const { sendAccountPendingEmail } = require('../../helpers/mailer');
+      await sendAccountPendingEmail({
+        firstName: user.firstName,
+        lastName:  user.lastName,
+        email:     user.email,
+        organisation: user.organisation,
+        country:   user.country,
+        isInternalUser: user.isInternalUser,
+      });
+    } catch (mailErr) {
+      logger.warn('Pending account notification email failed', { error: mailErr.message });
+    }
+
     return res.status(201).json({
-      message: 'Compte créé avec succès.',
-      user: { id: user.id, email: user.email, role: user.role },
+      message: 'Compte créé. Votre accès sera activé après validation par un administrateur.',
+      pending: true,
+      user: { id: user.id, email: user.email },
     });
   } catch (err) {
     logger.error('Registration failed', {
       event: 'auth_register_failed',
       error: err.message,
-      ...buildAuthMeta(req, {
-        firstName: firstName?.trim(),
-        lastName: lastName?.trim(),
-      }),
+      ...buildAuthMeta(req, { firstName: firstName?.trim(), lastName: lastName?.trim() }),
     });
-
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };
@@ -146,8 +172,16 @@ const requestOTP = async (req, res) => {
         event: 'auth_otp_request_unknown_email',
         ...buildAuthMeta(req),
       });
-
       return res.status(200).json({ registered: false, message: "Aucun compte associé à cet email." });
+    }
+
+    // Compte en attente d'approbation
+    if (!user.isApproved) {
+      logger.warn('OTP request blocked — account not approved', {
+        event: 'auth_otp_request_not_approved',
+        ...buildAuthMeta(req, { userId: user.id }),
+      });
+      return res.status(403).json({ pending: true, message: "Votre compte est en attente de validation par un administrateur." });
     }
 
     // Supprimer tout OTP précédent pour cet email
@@ -264,8 +298,16 @@ const verifyOTP = async (req, res) => {
         event: 'auth_verify_user_missing',
         ...buildAuthMeta(req),
       });
-
       return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    }
+
+    // Blocage si compte non approuvé
+    if (!user.isApproved) {
+      logger.warn('OTP login blocked — account not approved', {
+        event: 'auth_verify_not_approved',
+        ...buildAuthMeta(req, { userId: user.id }),
+      });
+      return res.status(403).json({ pending: true, message: "Votre compte est en attente de validation par un administrateur." });
     }
 
     const token = jwt.sign(
@@ -315,6 +357,11 @@ const loginWithPassword = async (req, res) => {
 
     if (!user) {
       return res.status(200).json({ registered: false, message: 'Aucun compte associé à cet email.' });
+    }
+
+    // Compte en attente d'approbation
+    if (!user.isApproved) {
+      return res.status(403).json({ pending: true, message: "Votre compte est en attente de validation par un administrateur." });
     }
 
     if (!user.passwordHash) {
