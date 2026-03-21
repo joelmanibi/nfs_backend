@@ -6,10 +6,10 @@ const { randomUUID }                      = require('crypto');
 const { pipeline }                        = require('stream');
 const { promisify }                       = require('util');
 const bcrypt                              = require('bcryptjs');
-const { File, ShareLink, sequelize }      = require('../models');
+const { File, ShareLink, User, sequelize } = require('../models');
 const { encryptToFile, createDecipherStream } = require('../../helpers/crypto');
 const { scanBuffer }                      = require('../../helpers/antivirus');
-const { sendFileReceivedEmail, sendShareLinkEmail } = require('../../helpers/mailer');
+const { sendFileReceivedEmail, sendShareLinkEmail, sendDownloadCodeEmail } = require('../../helpers/mailer');
 const logger                              = require('../../config/logger');
 
 const FRONTEND_URL   = process.env.FRONTEND_URL || 'http://10.112.30.143:3000';
@@ -18,6 +18,21 @@ const MAX_LINK_HOURS = 30 * 24; // 720 h
 const pipelineAsync   = promisify(pipeline);
 const ENCRYPTED_DIR   = path.resolve('assets', 'encrypted');
 const BCRYPT_ROUNDS   = 12;
+
+// ─── Référence unique DOC-YYYY-MM-XX-DDHHmmSS ────────────────────────────────
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+function generateReference() {
+  const now = new Date();
+  const YYYY = now.getFullYear();
+  const MM   = String(now.getMonth() + 1).padStart(2, '0');
+  const DD   = String(now.getDate()).padStart(2, '0');
+  const HH   = String(now.getHours()).padStart(2, '0');
+  const mm   = String(now.getMinutes()).padStart(2, '0');
+  const SS   = String(now.getSeconds()).padStart(2, '0');
+  const R1   = LETTERS[Math.floor(Math.random() * 26)];
+  const R2   = LETTERS[Math.floor(Math.random() * 26)];
+  return `DOC-${YYYY}-${MM}-${R1}${R2}-${DD}${HH}${mm}${SS}`;
+}
 
 const buildAuditMeta = (req, extra = {}) => ({
   userId: req.user?.id,
@@ -36,6 +51,9 @@ const uploadFile = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ message: 'Aucun fichier fourni.' });
     }
+
+    // ── Correction encodage filename (busboy décode en latin-1, le navigateur envoie UTF-8) ──
+    const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
 
     const {
       receiverEmail,
@@ -78,7 +96,7 @@ const uploadFile = async (req, res) => {
 
     const uploadMeta = buildAuditMeta(req, {
       receiverEmails: emailList,
-      originalName: req.file.originalname,
+      originalName,
       size: req.file.size,
       mimetype: req.file.mimetype,
       isProtected: protected_,
@@ -146,6 +164,8 @@ const uploadFile = async (req, res) => {
     const destPath     = path.join(ENCRYPTED_DIR, sharedFileId);
     encryptedPath      = destPath;
     const iv           = encryptToFile(req.file.buffer, destPath);
+    // On ne stocke que le nom du fichier (UUID), pas le chemin absolu.
+    // Cela rend le système portable en cas de changement de serveur.
 
     // ── Hash du code de protection ──
     const downloadCodeHash = protected_
@@ -160,10 +180,11 @@ const uploadFile = async (req, res) => {
         const fileId = randomUUID();
         const record = await File.create({
           id:            fileId,
+          reference:     generateReference(),
           senderId:      req.user.id,
           receiverEmail: email,
-          originalName:  req.file.originalname,
-          encryptedPath: destPath,
+          originalName:  originalName,
+          encryptedPath: sharedFileId,
           size:          req.file.size,
           isProtected:   protected_,
           downloadCodeHash,
@@ -192,49 +213,58 @@ const uploadFile = async (req, res) => {
       sharedFileId,
       senderId:   req.user.id,
       recipients: emailList,
-      originalName: req.file.originalname,
+      originalName,
       size:       req.file.size,
       isProtected: protected_,
       viaLink,
     });
 
     // ── Envoi des emails (hors transaction — l'upload est considéré réussi) ──
+
+    // Récupération du prénom de l'expéditeur depuis la base de données
+    let senderFirstName = req.user.firstName || '—';
+    try {
+      const senderUser = await User.findByPk(req.user.id, { attributes: ['firstName'] });
+      if (senderUser?.firstName) senderFirstName = senderUser.firstName;
+    } catch (lookupErr) {
+      logger.warn('Could not fetch sender firstName from DB, using token value', { error: lookupErr.message });
+    }
+
     for (const { record, shareLink } of createdRecords) {
       try {
-        const senderName         = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim();
-        const senderPhone        = req.user.phone || null;
-        const senderOrganisation = req.user.organisation || null;
-
+        // ── Mail 1 : notification avec lien ou accès plateforme ──────────────
         if (viaLink && shareLink) {
           const shareUrl = `${FRONTEND_URL}/download/${shareLink.token}`;
           await sendShareLinkEmail({
-            to: record.receiverEmail,
-            fileId: record.id,
-            senderEmail: req.user.email,
-            senderName,
-            senderPhone,
-            senderOrganisation,
-            originalName: record.originalName,
-            size: record.size,
-            isProtected: record.isProtected,
-            downloadCode: normalizedDownloadCode,
+            to:              record.receiverEmail,
+            fileId:          record.id,
+            senderFirstName,
+            reference:       record.reference,
+            isProtected:     record.isProtected,
             shareUrl,
-            expiresAt: shareLink.expiresAt,
-            comment: comment?.trim() || null,
+            comment:         comment?.trim() || null,
           });
         } else {
           await sendFileReceivedEmail({
-            to: record.receiverEmail,
-            fileId: record.id,
-            senderEmail: req.user.email,
-            senderName,
-            senderPhone,
-            senderOrganisation,
-            originalName: record.originalName,
-            size: record.size,
-            isProtected: record.isProtected,
+            to:              record.receiverEmail,
+            fileId:          record.id,
+            senderFirstName,
+            originalName:    record.originalName,
+            reference:       record.reference,
+            size:            record.size,
+            isProtected:     record.isProtected,
+            comment:         comment?.trim() || null,
+          });
+        }
+
+        // ── Mail 2 : code confidentiel (uniquement si fichier protégé) ───────
+        if (record.isProtected && normalizedDownloadCode) {
+          await sendDownloadCodeEmail({
+            to:           record.receiverEmail,
+            fileId:       record.id,
+            senderFirstName,
+            reference:    record.reference,
             downloadCode: normalizedDownloadCode,
-            comment: comment?.trim() || null,
           });
         }
       } catch (mailError) {
@@ -275,7 +305,9 @@ const uploadFile = async (req, res) => {
       event: 'file_upload_failed',
       error: err.message,
       ...buildAuditMeta(req, {
-        originalName: req.file?.originalname,
+        originalName: req.file?.originalname
+          ? Buffer.from(req.file.originalname, 'latin1').toString('utf8')
+          : undefined,
         size: req.file?.size,
       }),
     });
@@ -355,11 +387,16 @@ const downloadFile = async (req, res) => {
       }
     }
 
-    if (!fs.existsSync(file.encryptedPath)) {
+    // Reconstruction du chemin absolu (rétrocompat : anciens enregistrements ont déjà un chemin absolu)
+    const fullEncryptedPath = path.isAbsolute(file.encryptedPath)
+      ? file.encryptedPath
+      : path.join(ENCRYPTED_DIR, file.encryptedPath);
+
+    if (!fs.existsSync(fullEncryptedPath)) {
       logger.error('Encrypted file missing', {
         event: 'file_download_storage_missing',
         ...downloadMeta,
-        encryptedPath: file.encryptedPath,
+        encryptedPath: fullEncryptedPath,
       });
 
       return res.status(500).json({ message: 'Fichier physique introuvable.' });
@@ -374,7 +411,7 @@ const downloadFile = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.originalName)}"`);
     res.setHeader('Content-Type', 'application/octet-stream');
 
-    const readStream    = fs.createReadStream(file.encryptedPath);
+    const readStream    = fs.createReadStream(fullEncryptedPath);
     const decipherStream = createDecipherStream(file.iv);
 
     await pipelineAsync(readStream, decipherStream, res);
@@ -401,7 +438,14 @@ const getInbox = async (req, res) => {
   try {
     const files = await File.findAll({
       where: { receiverEmail: req.user.email.toLowerCase() },
-      attributes: { exclude: ['encryptedPath', 'downloadCodeHash', 'iv', 'senderId'] },
+      attributes: { exclude: ['encryptedPath', 'downloadCodeHash', 'iv'] },
+      include: [
+        {
+          model: User,
+          as: 'sender',
+          attributes: ['id', 'email', 'firstName', 'lastName', 'organisation'],
+        },
+      ],
       order: [['createdAt', 'DESC']],
     });
     return res.status(200).json({ count: files.length, files });
@@ -461,10 +505,14 @@ const deleteFile = async (req, res) => {
     if (file.senderId !== req.user.id)
       return res.status(403).json({ message: 'Accès refusé.' });
 
-    const encPath = file.encryptedPath;
+    // Reconstruction du chemin absolu (rétrocompat)
+    const storedPath = file.encryptedPath;
+    const encPath = path.isAbsolute(storedPath)
+      ? storedPath
+      : path.join(ENCRYPTED_DIR, storedPath);
 
     // Vérifier si d'autres fichiers partagent le même chemin physique
-    const siblingsCount = await File.count({ where: { encryptedPath: encPath } });
+    const siblingsCount = await File.count({ where: { encryptedPath: storedPath } });
 
     await file.destroy();
 

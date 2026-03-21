@@ -1,6 +1,7 @@
 'use strict';
 
 const fs                       = require('fs');
+const path                     = require('path');
 const { randomUUID }           = require('crypto');
 const { promisify }            = require('util');
 const { pipeline }             = require('stream');
@@ -9,7 +10,8 @@ const { File, ShareLink }      = require('../models');
 const { createDecipherStream } = require('../../helpers/crypto');
 const logger                   = require('../../config/logger');
 
-const pipelineAsync = promisify(pipeline);
+const pipelineAsync  = promisify(pipeline);
+const ENCRYPTED_DIR  = path.resolve('assets', 'encrypted');
 
 // Durée max autorisée : 30 jours
 const MAX_HOURS = 30 * 24;
@@ -90,7 +92,13 @@ const downloadViaToken = async (req, res) => {
     }
 
     const file = link.file;
-    if (!file || !fs.existsSync(file.encryptedPath)) {
+    // Reconstruction du chemin absolu (rétrocompat : anciens enregistrements ont un chemin absolu)
+    const fullEncryptedPath = file && (
+      path.isAbsolute(file.encryptedPath)
+        ? file.encryptedPath
+        : path.join(ENCRYPTED_DIR, file.encryptedPath)
+    );
+    if (!file || !fs.existsSync(fullEncryptedPath)) {
       return res.status(404).json({ message: 'Fichier source introuvable.' });
     }
 
@@ -125,7 +133,7 @@ const downloadViaToken = async (req, res) => {
     );
     res.setHeader('Content-Type', 'application/octet-stream');
 
-    const readStream     = fs.createReadStream(file.encryptedPath);
+    const readStream     = fs.createReadStream(fullEncryptedPath);
     const decipherStream = createDecipherStream(file.iv);
 
     await pipelineAsync(readStream, decipherStream, res);

@@ -96,59 +96,46 @@ const buildOTPEmail = ({ email, otp, expiryMinutes }) => ({
 
 const buildFileReceivedEmail = ({
   to,
-  senderEmail,
-  senderName,
-  senderPhone,
-  senderOrganisation,
+  senderFirstName,
   originalName,
+  reference,
   size,
   isProtected,
-  downloadCode,
   comment,
 }) => {
-  const safeName         = escapeHtml(senderName || senderEmail);
-  const safePhone        = escapeHtml(senderPhone || '\u2014');
-  const safeOrg          = escapeHtml(senderOrganisation || '\u2014');
-  const safeFileName     = escapeHtml(originalName);
-  const formattedSize    = formatFileSize(size);
-  const safeDownloadCode = downloadCode ? escapeHtml(downloadCode) : null;
-  const safeComment      = comment ? escapeHtml(comment) : null;
+  const safeName      = escapeHtml(senderFirstName || '—');
+  const safeFileName  = escapeHtml(originalName);
+  const safeRef       = reference ? escapeHtml(reference) : null;
+  const formattedSize = formatFileSize(size);
+  const safeComment   = comment ? escapeHtml(comment) : null;
 
   return {
     to,
-    subject: `Vous avez recu un fichier via IDS Secure Transport`,
+    subject: `Vous avez reçu un fichier via IDS Secure Transport`,
     text: [
       'Bonjour,',
       '',
-      'Vous avez recu un ou plusieurs fichiers de :',
-      `<< ${senderName || senderEmail} >>`,
-      `<< ${senderPhone || '\u2014'} >>`,
-      `<< ${senderOrganisation || '\u2014'} >>`,
+      `Vous avez reçu un ou plusieurs fichiers${safeRef ? ` référence (${reference})` : ''} de ${senderFirstName || '—'}.`,
       '',
       `Nom du fichier : ${originalName} (${formattedSize})`,
       '',
-      "Connectez-vous a la plateforme pour le telecharger.",
+      'Connectez-vous à la plateforme pour le télécharger.',
       '',
-      comment ? `<< ${comment} >>` : '',
+      comment ? `« ${comment} »` : '',
       '',
-      isProtected && downloadCode ? `Code de telechargement requis : ${downloadCode}` : '',
+      isProtected ? "Important : ce fichier est protégé par un code de téléchargement. Vous le recevrez dans un second email confidentiel." : '',
       '',
-      "Important : ce lien est susceptible d'etre valide pour une duree limitee et de requerir un mot de passe specifique.",
+      "Important : ce lien est susceptible d'être valide pour une durée limitée et de requérir un mot de passe spécifique.",
     ].filter((l) => l !== undefined).join('\n'),
     html: `
       <p>Bonjour,</p>
-      <p>Vous avez recu un ou plusieurs fichiers de :</p>
-      <p style="margin:8px 0 4px;font-weight:600">&laquo; ${safeName} &raquo;</p>
-      <p style="margin:2px 0 4px;color:#555">&laquo; ${safePhone} &raquo;</p>
-      <p style="margin:2px 0 12px;color:#555">&laquo; ${safeOrg} &raquo;</p>
+      <p>Vous avez reçu un ou plusieurs fichiers${safeRef ? ` référence <strong>${safeRef}</strong>` : ''} de <strong>${safeName}</strong>.</p>
       <p>Le fichier <strong>${safeFileName}</strong> (${escapeHtml(formattedSize)}) est disponible sur la plateforme.</p>
-      <p>Connectez-vous pour le telecharger.</p>
-      ${safeComment ? `<p style="margin-top:12px;font-style:italic;color:#444">&laquo; ${safeComment} &raquo;</p>` : ''}
-      ${isProtected && safeDownloadCode
-        ? `<p style="margin-top:12px"><strong>Code de telechargement requis :</strong></p><h2 style="letter-spacing:4px">${safeDownloadCode}</h2>`
-        : ''}
+      <p>Connectez-vous pour le télécharger.</p>
+      ${safeComment ? `<p style="margin-top:12px;font-style:italic;color:#444">« ${safeComment} »</p>` : ''}
+      ${isProtected ? `<p style="margin-top:12px;font-size:13px;color:#b45309"><strong>⚠ Ce fichier est protégé.</strong> Vous recevrez le code de téléchargement dans un second email confidentiel.</p>` : ''}
       <p style="margin-top:16px;font-size:12px;color:#888">
-        <strong>Important :</strong> ce lien est susceptible d&#39;etre valide pour une duree limitee et de requerir un mot de passe specifique.
+        <strong>Important :</strong> ce lien est susceptible d'être valide pour une durée limitée et de requérir un mot de passe spécifique.
       </p>
     `,
   };
@@ -166,7 +153,7 @@ const sendFileReceivedEmail = (payload) =>
   sendMail(buildFileReceivedEmail(payload), {
     mailType: 'file_received_notification',
     extra: {
-      senderEmail: normalizeEmail(payload.senderEmail),
+      senderFirstName: payload.senderFirstName,
       fileId: payload.fileId,
       originalName: payload.originalName,
       size: payload.size,
@@ -177,30 +164,16 @@ const sendFileReceivedEmail = (payload) =>
 // ── Email avec lien de téléchargement public ─────────────────────────────────
 const buildShareLinkEmail = ({
   to,
-  senderEmail,
-  senderName,
-  senderPhone,
-  senderOrganisation,
-  originalName,
-  size,
+  senderFirstName,
+  reference,
   isProtected,
-  downloadCode,
   shareUrl,
-  expiresAt,
   comment,
 }) => {
-  const safeName       = escapeHtml(senderName || senderEmail);
-  const safePhone      = escapeHtml(senderPhone || '—');
-  const safeOrg        = escapeHtml(senderOrganisation || '—');
-  const safeFileName   = escapeHtml(originalName);
-  const formattedSize  = formatFileSize(size);
-  const safeCode       = downloadCode ? escapeHtml(downloadCode) : null;
-  const safeUrl        = escapeHtml(shareUrl);
-  const safeComment    = comment ? escapeHtml(comment) : null;
-  const formattedDate  = new Date(expiresAt).toLocaleString('fr-FR', {
-    day: '2-digit', month: 'long', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  });
+  const safeName    = escapeHtml(senderFirstName || '—');
+  const safeRef     = reference ? escapeHtml(reference) : null;
+  const safeUrl     = escapeHtml(shareUrl);
+  const safeComment = comment ? escapeHtml(comment) : null;
 
   return {
     to,
@@ -208,10 +181,7 @@ const buildShareLinkEmail = ({
     text: [
       'Bonjour,',
       '',
-      'Vous avez reçu un ou plusieurs fichiers de :',
-      `« ${senderName || senderEmail} »`,
-      `« ${senderPhone || '—'} »`,
-      `« ${senderOrganisation || '—'} »`,
+      `Vous avez reçu un ou plusieurs fichiers${reference ? ` référence (${reference})` : ''} de ${senderFirstName || '—'}.`,
       '',
       'Le lien ci-dessous vous permet d\'accéder à un contenu en téléchargement.',
       '',
@@ -219,24 +189,19 @@ const buildShareLinkEmail = ({
       '',
       comment ? `« ${comment} »` : '',
       '',
-      isProtected && downloadCode ? `Code de téléchargement requis : ${downloadCode}` : '',
+      isProtected ? "Important : ce fichier est protégé par un code de téléchargement. Vous le recevrez dans un second email confidentiel." : '',
       '',
       'Important : ce lien est susceptible d\'être valide pour une durée limitée et de requérir un mot de passe spécifique.',
     ].filter((l) => l !== undefined).join('\n'),
     html: `
       <p>Bonjour,</p>
-      <p>Vous avez reçu un ou plusieurs fichiers de :</p>
-      <p style="margin:8px 0 4px;font-weight:600">« ${safeName} »</p>
-      <p style="margin:2px 0 4px;color:#555">« ${safePhone} »</p>
-      <p style="margin:2px 0 12px;color:#555">« ${safeOrg} »</p>
+      <p>Vous avez reçu un ou plusieurs fichiers${safeRef ? ` référence <strong>${safeRef}</strong>` : ''} de <strong>${safeName}</strong>.</p>
       <p>Le lien ci-dessous vous permet d'accéder à un contenu en téléchargement.</p>
       <p style="margin:12px 0">
         <a href="${shareUrl}" style="color:#2563eb;word-break:break-all">${safeUrl}</a>
       </p>
       ${safeComment ? `<p style="margin-top:12px;font-style:italic;color:#444">« ${safeComment} »</p>` : ''}
-      ${isProtected && safeCode
-        ? `<p style="margin-top:12px"><strong>Code de téléchargement requis :</strong></p><h2 style="letter-spacing:4px">${safeCode}</h2>`
-        : ''}
+      ${isProtected ? `<p style="margin-top:12px;font-size:13px;color:#b45309"><strong>⚠ Ce fichier est protégé.</strong> Vous recevrez le code de téléchargement dans un second email confidentiel.</p>` : ''}
       <p style="margin-top:16px;font-size:12px;color:#888">
         <strong>Important :</strong> ce lien est susceptible d'être valide pour une durée limitée et de requérir un mot de passe spécifique.
       </p>
@@ -248,11 +213,54 @@ const sendShareLinkEmail = (payload) =>
   sendMail(buildShareLinkEmail(payload), {
     mailType: 'file_share_link',
     extra: {
-      senderEmail: normalizeEmail(payload.senderEmail),
+      senderFirstName: payload.senderFirstName,
       fileId: payload.fileId,
-      originalName: payload.originalName,
-      size: payload.size,
       isProtected: Boolean(payload.isProtected),
+    },
+  });
+
+// ── Email confidentiel : code de téléchargement (Mail 2) ────────────────────
+const buildDownloadCodeEmail = ({
+  to,
+  senderFirstName,
+  reference,
+  downloadCode,
+}) => {
+  const safeName = escapeHtml(senderFirstName || '—');
+  const safeRef  = reference ? escapeHtml(reference) : null;
+  const safeCode = escapeHtml(downloadCode);
+
+  return {
+    to,
+    subject: `[CONFIDENTIEL] Code de téléchargement — ${reference || 'IDS Secure Transport'}`,
+    text: [
+      'Bonjour,',
+      '',
+      `Veuillez trouver ci-dessous le Code de téléchargement requis du fichier${safeRef ? ` référence (${reference})` : ''} de ${senderFirstName || '—'}.`,
+      '',
+      `Code : ${downloadCode}`,
+      '',
+      'Important : ce code est confidentiel. Ne le partagez pas.',
+    ].join('\n'),
+    html: `
+      <p>Bonjour,</p>
+      <p>Veuillez trouver ci-dessous le Code de téléchargement requis du fichier${safeRef ? ` référence <strong>${safeRef}</strong>` : ''} de <strong>${safeName}</strong>.</p>
+      <p style="margin:20px 0 8px"><strong>Code :</strong></p>
+      <h2 style="letter-spacing:6px;background:#f1f5f9;display:inline-block;padding:10px 20px;border-radius:8px;font-family:monospace">${safeCode}</h2>
+      <p style="margin-top:20px;font-size:12px;color:#dc2626">
+        <strong>⚠ Important :</strong> ce code est <strong>confidentiel</strong>. Ne le partagez à personne d'autre que vous-même.
+      </p>
+    `,
+  };
+};
+
+const sendDownloadCodeEmail = (payload) =>
+  sendMail(buildDownloadCodeEmail(payload), {
+    mailType: 'file_download_code',
+    extra: {
+      senderFirstName: payload.senderFirstName,
+      fileId: payload.fileId,
+      reference: payload.reference,
     },
   });
 
@@ -262,7 +270,7 @@ const buildAccountPendingEmail = ({ firstName, lastName, email, organisation, co
   const safeEmail = escapeHtml(email);
   const safeOrg   = escapeHtml(organisation || '—');
   const safeCountry = escapeHtml(country || '—');
-  const adminUrl  = `${process.env.FRONTEND_URL || 'http://10.112.30.143:3000'}/admin/users`;
+  const adminUrl  = `${process.env.FRONTEND_URL || 'http://:10.112.30.143:3000'}/admin/users`;
 
   return {
     to: process.env.ADMIN_NOTIFICATION_EMAIL || process.env.GMAIL_USER,
@@ -364,6 +372,7 @@ module.exports = {
   buildMailLogMeta,
   buildFileReceivedEmail,
   buildShareLinkEmail,
+  buildDownloadCodeEmail,
   buildOTPEmail,
   buildPasswordResetEmail,
   buildAccountPendingEmail,
@@ -372,6 +381,7 @@ module.exports = {
   formatFileSize,
   sendFileReceivedEmail,
   sendShareLinkEmail,
+  sendDownloadCodeEmail,
   sendOTPEmail,
   sendPasswordResetEmail,
   sendAccountPendingEmail,

@@ -7,6 +7,7 @@ const {
   register, requestOTP, verifyOTP,
   loginWithPassword, forgotPassword, resetPassword, changePassword,
 } = require('../controllers/authController');
+const { loginWithLDAP } = require('../controllers/ldapController');
 
 const router = Router();
 
@@ -45,6 +46,7 @@ router.post('/register',         register);
 router.post('/login',            loginLimiter,    requestOTP);
 router.post('/verify-otp',       verifyLimiter,   verifyOTP);
 router.post('/login-password',   passwordLimiter, loginWithPassword);
+router.post('/login-ldap',       passwordLimiter, loginWithLDAP);
 router.post('/forgot-password',  passwordLimiter, forgotPassword);
 router.post('/reset-password',   passwordLimiter, resetPassword);
 router.post('/change-password',  verifyToken,     changePassword);

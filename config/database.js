@@ -5,7 +5,7 @@ module.exports = {
     username: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
     database: process.env.DB_NAME || 'NFS',
-    host: process.env.DB_HOST || 'localhost',
+    host: process.env.DB_HOST || '10.112.30.143',
     port: process.env.DB_PORT || 3306,
     dialect: 'mysql',
     logging: false,

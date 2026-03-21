@@ -17,6 +17,11 @@ module.exports = (sequelize, DataTypes) => {
         primaryKey: true,
         allowNull: false,
       },
+      reference: {
+        type: DataTypes.STRING(40),
+        allowNull: true,
+        unique: true,
+      },
       senderId: {
         type: DataTypes.UUID,
         allowNull: false,
