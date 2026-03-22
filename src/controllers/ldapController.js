@@ -9,11 +9,12 @@ const logger       = require('../../config/logger');
 const { buildRequestAuditMeta } = require('../../helpers/audit');
 
 // ─── Config LDAP depuis .env ──────────────────────────────────────────────────
-const LDAP_URL         = process.env.LDAP_URL         || 'ldap://10.112.30.1:389';
-const LDAP_BASE_DN     = process.env.LDAP_BASE_DN     || 'DC=paa,DC=ci';
-const LDAP_BIND_DN     = process.env.LDAP_BIND_DN     || 'CN=svc-nfs,OU=ServiceAccounts,DC=paa,DC=ci';
-const LDAP_BIND_PASSWORD = process.env.LDAP_BIND_PASSWORD || 'P@ssword_Test_2024!';
-const LDAP_USER_FILTER = process.env.LDAP_USER_FILTER || '(sAMAccountName={username})';
+// Contrôleur PAA : A-SRV-DC-01 — LDAPS port 636 — domaine paa.local
+const LDAP_URL           = process.env.LDAP_URL           || 'ldaps://10.32.15.110:636';
+const LDAP_BASE_DN       = process.env.LDAP_BASE_DN       || 'OU=PAA,DC=paa,DC=local';
+const LDAP_BIND_DN       = process.env.LDAP_BIND_DN       || 'CN=idssecuremft,OU=PAA,DC=paa,DC=local';
+const LDAP_BIND_PASSWORD = process.env.LDAP_BIND_PASSWORD || 'S3cur3!P@@62';
+const LDAP_USER_FILTER   = process.env.LDAP_USER_FILTER   || '(sAMAccountName={username})';
 
 /**
  * POST /api/auth/login-ldap
@@ -62,9 +63,15 @@ const loginWithLDAP = async (req, res) => {
     await client.bind(userDN, password);
 
     // ── 4. Extraction des attributs AD ───────────────────────────────────────
-    const adEmail     = (Array.isArray(entry.mail)        ? entry.mail[0]        : entry.mail)        || `${username.trim()}@paa.ci`;
-    const adFirstName = (Array.isArray(entry.givenName)   ? entry.givenName[0]   : entry.givenName)   || username.trim();
-    const adLastName  = (Array.isArray(entry.sn)          ? entry.sn[0]          : entry.sn)          || 'PAA';
+    // Attributs PAA : mail (email), displayName (nom complet), givenName / sn (prénom / nom)
+    const adEmail       = (Array.isArray(entry.mail)        ? entry.mail[0]        : entry.mail)        || `${username.trim()}@paa.ci`;
+    const adDisplayName = (Array.isArray(entry.displayName) ? entry.displayName[0] : entry.displayName) || '';
+    const adFirstName   = (Array.isArray(entry.givenName)   ? entry.givenName[0]   : entry.givenName)
+                          || adDisplayName.split(' ')[0]
+                          || username.trim();
+    const adLastName    = (Array.isArray(entry.sn)          ? entry.sn[0]          : entry.sn)
+                          || adDisplayName.split(' ').slice(1).join(' ')
+                          || 'PAA';
     const normalizedEmail = adEmail.toLowerCase().trim();
 
     // ── 5. Trouver ou créer l'utilisateur en base (just-in-time provisioning) ──
