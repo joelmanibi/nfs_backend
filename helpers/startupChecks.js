@@ -7,7 +7,7 @@ const logger      = require('../config/logger');
 // ─── Test LDAPS ───────────────────────────────────────────────────────────────
 async function checkLdap() {
   const url      = process.env.LDAP_URL           || 'ldaps://10.32.15.110:636';
-  const bindDn   = process.env.LDAP_BIND_DN       || 'CN=idssecuremft,OU=PAA,DC=paa,DC=local';
+  const bindDn   = process.env.LDAP_BIND_DN       || 'idssecuremft@paa.local';
   const bindPass = process.env.LDAP_BIND_PASSWORD || '';
 
   const client = new Client({

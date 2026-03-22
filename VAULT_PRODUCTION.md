@@ -50,13 +50,13 @@ SMTP_SECURE=false
 SMTP_USER=idssecuremft
 SMTP_PASS=S3cur!P@@6
 SMTP_FROM=IDS Secure Transport <idssecuremft@paa.ci>
-SMTP_TLS_REJECT_UNAUTHORIZED=true
+SMTP_TLS_REJECT_UNAUTHORIZED=false
 
 # ── LDAP / Active Directory PAA ───────────────────────────────────────────────
 # Contrôleur : A-SRV-DC-01 (10.32.15.110) — LDAPS port 636
 LDAP_URL=ldaps://10.32.15.110:636
 LDAP_BASE_DN=OU=PAA,DC=paa,DC=local
-LDAP_BIND_DN=CN=idssecuremft,OU=PAA,DC=paa,DC=local
+LDAP_BIND_DN=idssecuremft@paa.local
 LDAP_BIND_PASSWORD=S3cur3!P@@62
 LDAP_USER_FILTER=(sAMAccountName={username})
 

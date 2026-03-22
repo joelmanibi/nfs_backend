@@ -12,7 +12,7 @@ const { buildRequestAuditMeta } = require('../../helpers/audit');
 // Contrôleur PAA : A-SRV-DC-01 — LDAPS port 636 — domaine paa.local
 const LDAP_URL           = process.env.LDAP_URL           || 'ldaps://10.32.15.110:636';
 const LDAP_BASE_DN       = process.env.LDAP_BASE_DN       || 'OU=PAA,DC=paa,DC=local';
-const LDAP_BIND_DN       = process.env.LDAP_BIND_DN       || 'CN=idssecuremft,OU=PAA,DC=paa,DC=local';
+const LDAP_BIND_DN       = process.env.LDAP_BIND_DN       || 'idssecuremft@paa.local';
 const LDAP_BIND_PASSWORD = process.env.LDAP_BIND_PASSWORD || 'S3cur3!P@@62';
 const LDAP_USER_FILTER   = process.env.LDAP_USER_FILTER   || '(sAMAccountName={username})';
 
