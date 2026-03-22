@@ -20,19 +20,66 @@ const formatFileSize = (size) => {
   return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 };
 
+// ─── Fournisseur email ────────────────────────────────────────────────────────
+// Sélection via MAIL_PROVIDER=gmail|smtp  (défaut : gmail)
+const getMailProvider = () => (process.env.MAIL_PROVIDER || 'gmail').toLowerCase().trim();
+
 const ensureMailConfig = () => {
-  if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
-    throw new Error('Configuration email manquante : GMAIL_USER/GMAIL_PASS requis.');
+  const provider = getMailProvider();
+
+  if (provider === 'smtp') {
+    if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+      throw new Error('MAIL_PROVIDER=smtp mais configuration incomplète : SMTP_HOST, SMTP_USER et SMTP_PASS sont requis.');
+    }
+    return;
   }
+
+  if (provider === 'gmail') {
+    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+      throw new Error('MAIL_PROVIDER=gmail mais configuration incomplète : GMAIL_USER et GMAIL_PASS sont requis.');
+    }
+    return;
+  }
+
+  throw new Error(`MAIL_PROVIDER invalide : "${provider}". Valeurs acceptées : gmail, smtp.`);
 };
 
-const createTransporter = () => nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_PASS,
-  },
-});
+const createTransporter = () => {
+  const provider = getMailProvider();
+
+  // ── SMTP générique (serveur PAA ou tout autre serveur) ────────────────────
+  if (provider === 'smtp') {
+    return nodemailer.createTransport({
+      host:   process.env.SMTP_HOST,
+      port:   parseInt(process.env.SMTP_PORT, 10) || 587,
+      secure: process.env.SMTP_SECURE === 'true',   // true = port 465, false = STARTTLS
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+      tls: {
+        rejectUnauthorized: process.env.SMTP_TLS_REJECT_UNAUTHORIZED !== 'false',
+      },
+    });
+  }
+
+  // ── Gmail ─────────────────────────────────────────────────────────────────
+  return nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_PASS,
+    },
+  });
+};
+
+// Adresse expéditeur selon le fournisseur actif
+const getSenderAddress = () => {
+  if (getMailProvider() === 'smtp') {
+    return process.env.SMTP_FROM || process.env.SMTP_USER;
+  }
+  return process.env.GMAIL_USER;
+};
 
 const buildMailLogMeta = ({ mailType, to, subject, extra = {} }) => ({
   mailType,
@@ -58,7 +105,7 @@ const sendMail = async (message, logContext = {}) => {
 
   try {
     const info = await createTransporter().sendMail({
-      from: `"${APP_NAME}" <${process.env.GMAIL_USER}>`,
+      from: `"${APP_NAME}" <${getSenderAddress()}>`,
       ...message,
     });
 
