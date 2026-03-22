@@ -1,6 +1,8 @@
 'use strict';
 
-const { loadVaultSecrets } = require('./config/vault');
+const { loadVaultSecrets }  = require('./config/vault');
+const { runStartupChecks }  = require('./helpers/startupChecks');
+const logger                = require('./config/logger');
 
 function createApp() {
   const express = require('express');
@@ -27,12 +29,19 @@ function createApp() {
 async function startServer() {
   await loadVaultSecrets();
 
+  // ── Vérifications de connectivité au démarrage ────────────────────────────
+  // Tests LDAPS + SMTP exécutés en parallèle — jamais bloquants
+  await runStartupChecks();
+
   const app = createApp();
   const port = process.env.PORT || 8000;
 
   return new Promise((resolve, reject) => {
     const server = app.listen(port, '0.0.0.0', () => {
-      console.log(`App listening on port ${port}`);
+      logger.info(`[startup] Serveur démarré sur le port ${port}`, {
+        event: 'server_started',
+        port,
+      });
       resolve({ app, server });
     });
 
