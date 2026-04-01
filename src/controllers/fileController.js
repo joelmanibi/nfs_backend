@@ -6,6 +6,7 @@ const { randomUUID }                      = require('crypto');
 const { pipeline }                        = require('stream');
 const { promisify }                       = require('util');
 const bcrypt                              = require('bcryptjs');
+const { Op }                               = require('sequelize');
 const { File, ShareLink, User, sequelize } = require('../models');
 const { encryptToFile, createDecipherStream } = require('../../helpers/crypto');
 const { scanBuffer }                      = require('../../helpers/antivirus');
@@ -84,6 +85,35 @@ const uploadFile = async (req, res) => {
 
     if (!emailList.length) {
       return res.status(400).json({ message: 'Au moins un email destinataire est requis.' });
+    }
+
+    // ── Règle métier : un utilisateur externe ne peut pas envoyer à un externe ──
+    const senderRecord = await User.findByPk(req.user.id, { attributes: ['isInternalUser'] });
+    if (senderRecord && !senderRecord.isInternalUser) {
+      const recipientRecords = await User.findAll({
+        where: { email: { [Op.in]: emailList } },
+        attributes: ['email', 'isInternalUser'],
+      });
+
+      // Map email → isInternalUser pour lookup rapide
+      const recipientMap = new Map(
+        recipientRecords.map((r) => [r.email.toLowerCase(), r.isInternalUser]),
+      );
+
+      // Bloquer si le destinataire est externe (isInternalUser=false) ou inconnu
+      const blockedEmails = emailList.filter(
+        (e) => !recipientMap.has(e) || recipientMap.get(e) === false,
+      );
+
+      if (blockedEmails.length > 0) {
+        logger.warn('External-to-external file transfer blocked', {
+          event: 'file_upload_ext_to_ext_blocked',
+          ...buildAuditMeta(req, { blockedRecipients: blockedEmails }),
+        });
+        return res.status(403).json({
+          message: 'Un utilisateur externe ne peut pas envoyer de fichier à un autre utilisateur externe. Veuillez sélectionner uniquement des destinataires internes.',
+        });
+      }
     }
 
     const protected_            = isProtected === 'true' || isProtected === true;
