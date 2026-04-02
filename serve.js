@@ -11,6 +11,11 @@ function createApp() {
   const db = require('./src/models');
 
   const app = express();
+
+  // Nginx agit comme reverse proxy — on lui fait confiance pour X-Forwarded-For
+  // Nécessaire pour que express-rate-limit identifie correctement l'IP réelle du client
+  app.set('trust proxy', 1);
+
   const corsOptions = {
     origin: '*',
   };
