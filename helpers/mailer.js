@@ -162,7 +162,7 @@ const buildFileReceivedEmail = ({
     text: [
       'Bonjour,',
       '',
-      `Vous avez reçu un ou plusieurs fichiers${safeRef ? ` référence (${reference})` : ''} de ${senderFirstName || '—'}.`,
+      `Vous avez reçu un ou plusieurs fichiers sécurisés ${safeRef ? ` référencé (${reference})` : ''} de ${senderFirstName || '—'}.`,
       '',
       `Nom du fichier : ${originalName} (${formattedSize})`,
       '',
@@ -176,7 +176,7 @@ const buildFileReceivedEmail = ({
     ].filter((l) => l !== undefined).join('\n'),
     html: `
       <p>Bonjour,</p>
-      <p>Vous avez reçu un ou plusieurs fichiers${safeRef ? ` référence <strong>${safeRef}</strong>` : ''} de <strong>${safeName}</strong>.</p>
+      <p>Vous avez reçu un ou plusieurs fichiers sécurisés ${safeRef ? ` référence <strong>${safeRef}</strong>` : ''} de <strong>${safeName}</strong>.</p>
       <p>Le fichier <strong>${safeFileName}</strong> (${escapeHtml(formattedSize)}) est disponible sur la plateforme.</p>
       <p>Connectez-vous pour le télécharger.</p>
       ${safeComment ? `<p style="margin-top:12px;font-style:italic;color:#444">« ${safeComment} »</p>` : ''}
@@ -228,7 +228,7 @@ const buildShareLinkEmail = ({
     text: [
       'Bonjour,',
       '',
-      `Vous avez reçu un ou plusieurs fichiers${reference ? ` référence (${reference})` : ''} de ${senderFirstName || '—'}.`,
+      `Vous avez reçu un ou plusieurs fichiers sécurisés ${reference ? ` référencé (${reference})` : ''} de ${senderFirstName || '—'}.`,
       '',
       'Le lien ci-dessous vous permet d\'accéder à un contenu en téléchargement.',
       '',
@@ -242,7 +242,7 @@ const buildShareLinkEmail = ({
     ].filter((l) => l !== undefined).join('\n'),
     html: `
       <p>Bonjour,</p>
-      <p>Vous avez reçu un ou plusieurs fichiers${safeRef ? ` référence <strong>${safeRef}</strong>` : ''} de <strong>${safeName}</strong>.</p>
+      <p>Vous avez reçu un ou plusieurs fichiers sécurisés${safeRef ? ` référencé <strong>${safeRef}</strong>` : ''} de <strong>${safeName}</strong>.</p>
       <p>Le lien ci-dessous vous permet d'accéder à un contenu en téléchargement.</p>
       <p style="margin:12px 0">
         <a href="${shareUrl}" style="color:#2563eb;word-break:break-all">${safeUrl}</a>
@@ -283,7 +283,7 @@ const buildDownloadCodeEmail = ({
     text: [
       'Bonjour,',
       '',
-      `Veuillez trouver ci-dessous le Code de téléchargement requis du fichier${safeRef ? ` référence (${reference})` : ''} de ${senderFirstName || '—'}.`,
+      `Veuillez trouver ci-dessous le Code de téléchargement requis du fichier sécurisés ${safeRef ? ` référencé (${reference})` : ''} de ${senderFirstName || '—'}.`,
       '',
       `Code : ${downloadCode}`,
       '',
@@ -291,7 +291,7 @@ const buildDownloadCodeEmail = ({
     ].join('\n'),
     html: `
       <p>Bonjour,</p>
-      <p>Veuillez trouver ci-dessous le Code de téléchargement requis du fichier${safeRef ? ` référence <strong>${safeRef}</strong>` : ''} de <strong>${safeName}</strong>.</p>
+      <p>Veuillez trouver ci-dessous le Code de téléchargement requis du fichier sécurisé ${safeRef ? ` référencé <strong>${safeRef}</strong>` : ''} de <strong>${safeName}</strong>.</p>
       <p style="margin:20px 0 8px"><strong>Code :</strong></p>
       <h2 style="letter-spacing:6px;background:#f1f5f9;display:inline-block;padding:10px 20px;border-radius:8px;font-family:monospace">${safeCode}</h2>
       <p style="margin-top:20px;font-size:12px;color:#dc2626">

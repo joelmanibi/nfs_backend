@@ -18,14 +18,16 @@ const BCRYPT_ROUNDS        = 12;
 const FRONTEND_URL         = process.env.FRONTEND_URL || 'http://10.112.30.143:3000';
 
 // ─── Password strength (server-side mirror of frontend rules) ─────────────────
-// Minimum acceptable: 8+ chars, at least 2 of {upper, lower, digit, special}
-const PASSWORD_MIN_SCORE = 2;
+// Règle : 8–12 caractères, TOUS les 4 critères obligatoires
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 12;
+const PASSWORD_MIN_SCORE  = 4; // tous les critères sont requis
 const evaluatePassword = (pwd) => {
-  if (!pwd || pwd.length < 8) return 0;
+  if (!pwd || pwd.length < PASSWORD_MIN_LENGTH) return 0;
   let score = 0;
   if (/[A-Z]/.test(pwd)) score++;
   if (/[a-z]/.test(pwd)) score++;
-  if (/[0-9]/.test(pwd)  ) score++;
+  if (/[0-9]/.test(pwd)) score++;
   if (/[^A-Za-z0-9]/.test(pwd)) score++;
   return score;
 };
@@ -71,10 +73,15 @@ const register = async (req, res) => {
     }
 
     // ── Validation mot de passe ────────────────────────────────────────────────
+    if (password.length > PASSWORD_MAX_LENGTH) {
+      return res.status(400).json({
+        message: `Le mot de passe ne doit pas dépasser ${PASSWORD_MAX_LENGTH} caractères.`,
+      });
+    }
     const score = evaluatePassword(password);
     if (score < PASSWORD_MIN_SCORE) {
       return res.status(400).json({
-        message: 'Mot de passe trop faible. Utilisez au moins 8 caractères avec majuscules, minuscules, chiffres ou caractères spéciaux.',
+        message: 'Mot de passe invalide. Il doit contenir entre 8 et 12 caractères, avec au moins une majuscule, une minuscule, un chiffre et un caractère spécial.',
       });
     }
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
@@ -458,10 +465,15 @@ const resetPassword = async (req, res) => {
       return res.status(400).json({ message: 'Email, token et nouveau mot de passe requis.' });
     }
 
+    if (password.length > PASSWORD_MAX_LENGTH) {
+      return res.status(400).json({
+        message: `Le mot de passe ne doit pas dépasser ${PASSWORD_MAX_LENGTH} caractères.`,
+      });
+    }
     const score = evaluatePassword(password);
     if (score < PASSWORD_MIN_SCORE) {
       return res.status(400).json({
-        message: 'Mot de passe trop faible. Utilisez au moins 8 caractères avec majuscules, minuscules, chiffres ou caractères spéciaux.',
+        message: 'Mot de passe invalide. Il doit contenir entre 8 et 12 caractères, avec au moins une majuscule, une minuscule, un chiffre et un caractère spécial.',
       });
     }
 
@@ -503,10 +515,15 @@ const changePassword = async (req, res) => {
       return res.status(400).json({ message: 'Le nouveau mot de passe est requis.' });
     }
 
+    if (newPassword.length > PASSWORD_MAX_LENGTH) {
+      return res.status(400).json({
+        message: `Le mot de passe ne doit pas dépasser ${PASSWORD_MAX_LENGTH} caractères.`,
+      });
+    }
     const score = evaluatePassword(newPassword);
     if (score < PASSWORD_MIN_SCORE) {
       return res.status(400).json({
-        message: 'Mot de passe trop faible. Utilisez au moins 8 caractères avec majuscules, minuscules, chiffres ou caractères spéciaux.',
+        message: 'Mot de passe invalide. Il doit contenir entre 8 et 12 caractères, avec au moins une majuscule, une minuscule, un chiffre et un caractère spécial.',
       });
     }
 
