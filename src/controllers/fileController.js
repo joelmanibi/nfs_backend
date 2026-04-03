@@ -13,7 +13,7 @@ const { scanBuffer }                      = require('../../helpers/antivirus');
 const { sendFileReceivedEmail, sendShareLinkEmail, sendDownloadCodeEmail } = require('../../helpers/mailer');
 const logger                              = require('../../config/logger');
 
-const FRONTEND_URL   = process.env.FRONTEND_URL || 'http://10.112.30.143:3000';
+const FRONTEND_URL   = process.env.FRONTEND_URL || 'https://securetransport.paa.ci';
 const MAX_LINK_HOURS = 30 * 24; // 720 h
 
 const pipelineAsync   = promisify(pipeline);

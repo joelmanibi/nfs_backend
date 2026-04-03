@@ -15,7 +15,7 @@ const OTP_EXPIRY_MS        = 10 * 60 * 1000;  // 10 min
 const RESET_TOKEN_EXPIRY_MS = 30 * 60 * 1000; // 30 min
 const OTP_MAX_ATTEMPTS     = 5;
 const BCRYPT_ROUNDS        = 12;
-const FRONTEND_URL         = process.env.FRONTEND_URL || 'http://10.112.30.143:3000';
+const FRONTEND_URL         = process.env.FRONTEND_URL || 'https://securetransport.paa.ci';
 
 // ─── Password strength (server-side mirror of frontend rules) ─────────────────
 // Règle : 8–12 caractères, TOUS les 4 critères obligatoires

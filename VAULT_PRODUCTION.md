@@ -49,7 +49,7 @@ SMTP_PORT=25
 SMTP_SECURE=false
 SMTP_USER=idssecuremft@paa.ci
 SMTP_PASS=S3cur!P@@6
-SMTP_FROM=IDS Secure Transport <idssecuremft@paa.ci>
+SMTP_FROM=PAA Secure Transport <idssecuremft@paa.ci>
 SMTP_TLS_REJECT_UNAUTHORIZED=false
 
 # ── LDAP / Active Directory PAA ───────────────────────────────────────────────

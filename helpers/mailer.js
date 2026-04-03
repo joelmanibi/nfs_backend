@@ -4,7 +4,7 @@ const nodemailer = require('nodemailer');
 const logger = require('../config/logger');
 const { normalizeEmail } = require('./audit');
 
-const APP_NAME = 'IDS Secure Transport';
+const APP_NAME = 'PAA Secure Transport';
 
 const escapeHtml = (value) => String(value)
   .replace(/&/g, '&amp;')
@@ -131,7 +131,7 @@ const sendMail = async (message, logContext = {}) => {
 
 const buildOTPEmail = ({ email, otp, expiryMinutes }) => ({
   to: email,
-  subject: 'Votre code de connexion IDS Secure Transport',
+  subject: 'Votre code de connexion PAA Secure Transport',
   text: `Votre code OTP : ${otp}. Valide ${expiryMinutes} minutes.`,
   html: `
     <p>Votre code de connexion :</p>
@@ -158,7 +158,7 @@ const buildFileReceivedEmail = ({
 
   return {
     to,
-    subject: `Vous avez reçu un fichier via IDS Secure Transport`,
+    subject: `Vous avez reçu un fichier via PAA Secure Transport`,
     text: [
       'Bonjour,',
       '',
@@ -224,7 +224,7 @@ const buildShareLinkEmail = ({
 
   return {
     to,
-    subject: `Vous avez reçu un fichier via IDS Secure Transport`,
+    subject: `Vous avez reçu un fichier via PAA Secure Transport`,
     text: [
       'Bonjour,',
       '',
@@ -279,7 +279,7 @@ const buildDownloadCodeEmail = ({
 
   return {
     to,
-    subject: `[CONFIDENTIEL] Code de téléchargement — ${reference || 'IDS Secure Transport'}`,
+    subject: `[CONFIDENTIEL] Code de téléchargement — ${reference || 'PAA Secure Transport'}`,
     text: [
       'Bonjour,',
       '',
@@ -321,7 +321,7 @@ const buildAccountPendingEmail = ({ firstName, lastName, email, organisation, co
 
   return {
     to: process.env.ADMIN_NOTIFICATION_EMAIL || process.env.GMAIL_USER,
-    subject: `[IDS Secure Transport] Nouveau compte en attente d'approbation — ${safeEmail}`,
+    subject: `[PAA Secure Transport] Nouveau compte en attente d'approbation — ${safeEmail}`,
     text: `Un nouveau compte vient d'être créé et attend votre validation.\nNom : ${firstName} ${lastName}\nEmail : ${email}\nOrganisation : ${organisation}\nPays : ${country}\nUtilisateur interne : ${isInternalUser ? 'Oui' : 'Non'}\n\nValidez le compte ici : ${adminUrl}`,
     html: `
       <p>Un nouveau compte vient d'être créé et attend votre validation.</p>
@@ -343,13 +343,13 @@ const buildAccountPendingEmail = ({ firstName, lastName, email, organisation, co
 
 const buildAccountApprovedEmail = ({ firstName, email }) => ({
   to: email,
-  subject: `[IDS Secure Transport] Votre compte a été approuvé`,
-  text: `Bonjour ${firstName},\n\nVotre compte IDS Secure Transport a été approuvé. Vous pouvez maintenant vous connecter.\n${process.env.FRONTEND_URL || 'http://10.112.30.143:3000'}/login`,
+  subject: `[PAA Secure Transport] Votre compte a été approuvé`,
+  text: `Bonjour ${firstName},\n\nVotre compte PAA Secure Transport a été approuvé. Vous pouvez maintenant vous connecter.\n${process.env.FRONTEND_URL || 'https://securetransport.paa.ci'}/login`,
   html: `
     <p>Bonjour <strong>${escapeHtml(firstName)}</strong>,</p>
-    <p>Votre compte <strong>IDS Secure Transport</strong> a été approuvé par un administrateur. Vous pouvez maintenant accéder à la plateforme.</p>
+    <p>Votre compte <strong>PAA Secure Transport</strong> a été approuvé par un administrateur. Vous pouvez maintenant accéder à la plateforme.</p>
     <p style="margin-top:16px">
-      <a href="${process.env.FRONTEND_URL || 'http://10.112.30.143:3000'}/login" style="display:inline-block;padding:10px 20px;background:#16a34a;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">
+      <a href="${process.env.FRONTEND_URL || 'https://securetransport.paa.ci'}/login" style="display:inline-block;padding:10px 20px;background:#16a34a;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">
         ✅ Accéder à la plateforme
       </a>
     </p>
@@ -358,11 +358,11 @@ const buildAccountApprovedEmail = ({ firstName, email }) => ({
 
 const buildAccountRejectedEmail = ({ firstName, email }) => ({
   to: email,
-  subject: `[IDS Secure Transport] Votre demande de compte`,
-  text: `Bonjour ${firstName},\n\nNous avons examiné votre demande de compte IDS Secure Transport. Malheureusement, nous ne sommes pas en mesure de l'approuver pour le moment. Contactez l'équipe pour plus d'informations.`,
+  subject: `[PAA Secure Transport] Votre demande de compte`,
+  text: `Bonjour ${firstName},\n\nNous avons examiné votre demande de compte PAA Secure Transport. Malheureusement, nous ne sommes pas en mesure de l'approuver pour le moment. Contactez l'équipe pour plus d'informations.`,
   html: `
     <p>Bonjour <strong>${escapeHtml(firstName)}</strong>,</p>
-    <p>Nous avons examiné votre demande d'accès à la plateforme <strong>IDS Secure Transport</strong>. Malheureusement, nous ne sommes pas en mesure de l'approuver pour le moment.</p>
+    <p>Nous avons examiné votre demande d'accès à la plateforme <strong>PAA Secure Transport</strong>. Malheureusement, nous ne sommes pas en mesure de l'approuver pour le moment.</p>
     <p style="font-size:13px;color:#666">Si vous pensez qu'il s'agit d'une erreur, veuillez contacter l'équipe d'administration.</p>
   `,
 });
@@ -388,7 +388,7 @@ const buildPasswordResetEmail = ({ to, firstName, resetUrl, expiryMinutes }) => 
     text: [
       `Bonjour ${firstName || ''},`,
       '',
-      'Vous avez demandé la réinitialisation de votre mot de passe IDS Secure Transport.',
+      'Vous avez demandé la réinitialisation de votre mot de passe I Secure Transport.',
       `Cliquez sur le lien suivant pour en définir un nouveau (valable ${expiryMinutes} minutes) :`,
       resetUrl,
       '',
