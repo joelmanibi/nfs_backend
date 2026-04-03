@@ -11,7 +11,7 @@ const { buildRequestAuditMeta, normalizeEmail } = require('../../helpers/audit')
 const { sendOTPEmail, sendPasswordResetEmail } = require('../../helpers/mailer');
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-const OTP_EXPIRY_MS        = 10 * 60 * 1000;  // 10 min
+const OTP_EXPIRY_MS        = 1 * 60 * 1000;   // 1 min
 const RESET_TOKEN_EXPIRY_MS = 30 * 60 * 1000; // 30 min
 const OTP_MAX_ATTEMPTS     = 5;
 const BCRYPT_ROUNDS        = 12;

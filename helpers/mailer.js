@@ -129,17 +129,20 @@ const sendMail = async (message, logContext = {}) => {
   }
 };
 
-const buildOTPEmail = ({ email, otp, expiryMinutes }) => ({
-  to: email,
-  subject: 'Votre code de connexion PAA Secure Transport',
-  text: `Votre code OTP : ${otp}. Valide ${expiryMinutes} minutes.`,
-  html: `
-    <p>Votre code de connexion :</p>
-    <h2 style="letter-spacing:8px">${escapeHtml(otp)}</h2>
-    <p>Ce code expire dans <strong>${escapeHtml(expiryMinutes)}</strong> minutes.</p>
-    <p>Si vous n'avez pas demandé ce code, ignorez cet email.</p>
-  `,
-});
+const buildOTPEmail = ({ email, otp, expiryMinutes }) => {
+  const expiryLabel = expiryMinutes === 1 ? '1 minute' : `${expiryMinutes} minutes`;
+  return {
+    to: email,
+    subject: 'Votre code de connexion PAA Secure Transport',
+    text: `Votre code OTP : ${otp}. Valide ${expiryLabel}.`,
+    html: `
+      <p>Votre code de connexion :</p>
+      <h2 style="letter-spacing:8px">${escapeHtml(otp)}</h2>
+      <p>Ce code expire dans <strong>${escapeHtml(expiryLabel)}</strong>.</p>
+      <p>Si vous n'avez pas demandé ce code, ignorez cet email.</p>
+    `,
+  };
+};
 
 const buildFileReceivedEmail = ({
   to,
