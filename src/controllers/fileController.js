@@ -14,7 +14,7 @@ const { sendFileReceivedEmail, sendShareLinkEmail, sendDownloadCodeEmail } = req
 const logger                              = require('../../config/logger');
 
 const FRONTEND_URL   = process.env.FRONTEND_URL || 'https://securetransport.paa.ci';
-const MAX_LINK_HOURS = 30 * 24; // 720 h
+const MAX_LINK_HOURS = 15 * 24; // 360 h
 
 const pipelineAsync   = promisify(pipeline);
 const ENCRYPTED_DIR   = path.resolve('assets', 'encrypted');

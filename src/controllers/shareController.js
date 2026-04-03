@@ -13,8 +13,8 @@ const logger                   = require('../../config/logger');
 const pipelineAsync  = promisify(pipeline);
 const ENCRYPTED_DIR  = path.resolve('assets', 'encrypted');
 
-// Durée max autorisée : 30 jours
-const MAX_HOURS = 30 * 24;
+// Durée max autorisée : 15 jours
+const MAX_HOURS = 15 * 24;
 
 // ─── Créer un lien de partage ─────────────────────────────────────────────────
 /**
