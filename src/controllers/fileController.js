@@ -446,9 +446,16 @@ const downloadFile = async (req, res) => {
 
     await pipelineAsync(readStream, decipherStream, res);
 
+    // ── Enregistrer le statut de téléchargement ───────────────────────────────
+    await file.update({
+      downloadedAt: new Date(),
+      downloadedBy: req.user.email.toLowerCase(),
+    });
+
     logger.info('File download succeeded', {
       event: 'file_download_succeeded',
       ...downloadMeta,
+      downloadedBy: req.user.email.toLowerCase(),
     });
   } catch (err) {
     logger.error('Download error', {

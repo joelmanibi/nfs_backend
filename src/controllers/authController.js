@@ -387,21 +387,24 @@ const loginWithPassword = async (req, res) => {
       return res.status(401).json({ message: 'Email ou mot de passe incorrect.' });
     }
 
-    const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      config.jwt.secret,
-      { expiresIn: '2h' },
-    );
+    // ── Mot de passe valide → envoyer un OTP pour la 2ème vérification ────────
+    await OTP.destroy({ where: { email: normalizedEmail } });
 
-    logger.info('Password login succeeded', {
-      event: 'auth_password_login_succeeded',
-      ...buildAuthMeta(req, { authenticatedUserId: user.id }),
+    const otp      = generateOTP();
+    const otpHash  = await bcrypt.hash(otp, BCRYPT_ROUNDS);
+    const expiresAt = new Date(Date.now() + OTP_EXPIRY_MS);
+
+    await OTP.create({ email: normalizedEmail, otpHash, expiresAt });
+    await sendOTPEmail({ email: normalizedEmail, otp, expiryMinutes: OTP_EXPIRY_MS / 60000 });
+
+    logger.info('Password login — OTP sent for 2FA', {
+      event: 'auth_password_login_otp_sent',
+      ...buildAuthMeta(req, { userId: user.id }),
     });
 
     return res.status(200).json({
-      message: 'Authentification réussie.',
-      token,
-      user: { id: user.id, email: user.email, role: user.role },
+      otpRequired: true,
+      message: 'Mot de passe vérifié. Un code OTP a été envoyé à votre adresse email.',
     });
   } catch (err) {
     logger.error('Password login error', { event: 'auth_password_login_failed', error: err.message });

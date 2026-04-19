@@ -75,9 +75,14 @@ const updateUser = async (req, res) => {
     const { id } = req.params;
     const { role, isInternalUser } = req.body;
 
+    // Seul SUPER_ADMIN peut attribuer le rôle SUPER_ADMIN
+    if (role === 'SUPER_ADMIN' && req.user.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({ message: 'Seul un Super Administrateur peut attribuer ce rôle.' });
+    }
+
     // Valider les champs fournis
-    if (role !== undefined && !['ADMIN', 'USER'].includes(role)) {
-      return res.status(400).json({ message: 'Rôle invalide. Valeurs: ADMIN, USER.' });
+    if (role !== undefined && !['SUPER_ADMIN', 'ADMIN', 'USER'].includes(role)) {
+      return res.status(400).json({ message: 'Rôle invalide. Valeurs: SUPER_ADMIN, ADMIN, USER.' });
     }
 
     const user = await User.findByPk(id, { attributes: ['id', 'email', 'role', 'isInternalUser'] });
@@ -145,7 +150,17 @@ const getTransfers = async (req, res) => {
       offset: (page - 1) * limit,
     });
 
-    return res.json({ count, page, pages: Math.ceil(count / limit), transfers: rows });
+    // ADMIN (non SUPER_ADMIN) : masquer les emails des destinataires
+    const transfers = rows.map((f) => {
+      const obj = f.toJSON();
+      if (req.user.role !== 'SUPER_ADMIN') {
+        if (obj.receiverEmail) obj.receiverEmail = '***@***';
+        if (obj.sender?.email) obj.sender.email = '***@***';
+      }
+      return obj;
+    });
+
+    return res.json({ count, page, pages: Math.ceil(count / limit), transfers });
   } catch (err) {
     logger.error('Admin getTransfers error', { error: err.message });
     return res.status(500).json({ message: 'Erreur interne.' });
@@ -173,6 +188,57 @@ const getActiveTransfers = async (req, res) => {
   }
 };
 
+// ─── Sanitisation des logs pour le rôle ADMIN ────────────────────────────────
+const EVENT_ACTION_MAP = [
+  ['file_upload',    'UPLOAD'],
+  ['file_download',  'TÉLÉCHARGEMENT'],
+  ['share_link',     'PARTAGE'],
+  ['auth_otp',       'CONNEXION'],
+  ['auth_password',  'CONNEXION'],
+  ['auth_ldap',      'CONNEXION'],
+  ['auth_register',  'INSCRIPTION'],
+  ['auth_forgot',    'RESET MDP'],
+  ['auth_reset',     'RESET MDP'],
+  ['auth_change',    'CHANGEMENT MDP'],
+  ['admin_',         'ADMIN'],
+];
+
+const formatBytes = (bytes) => {
+  if (!bytes) return null;
+  const n = parseInt(bytes, 10);
+  if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} Go`;
+  if (n >= 1048576)    return `${(n / 1048576).toFixed(1)} Mo`;
+  if (n >= 1024)       return `${(n / 1024).toFixed(1)} Ko`;
+  return `${n} o`;
+};
+
+const sanitizeLogEntry = (entry) => {
+  // Heure seulement (pas de date, pas d'IP)
+  const time = entry.timestamp
+    ? new Date(entry.timestamp).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : '—';
+
+  // Acteur : email → prénom.nom ou partie avant @ sans domaine
+  const rawEmail = entry.targetEmail || entry.email || '';
+  const actor = rawEmail
+    ? rawEmail.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '')
+    : 'système';
+
+  // Action déduite du champ event
+  let action = 'ACTION';
+  for (const [key, label] of EVENT_ACTION_MAP) {
+    if (entry.event?.startsWith(key)) { action = label; break; }
+  }
+
+  // Statut
+  const status = entry.level === 'error' ? 'KO' : 'OK';
+
+  // Taille (si disponible dans le log)
+  const size = entry.size ? formatBytes(entry.size) : null;
+
+  return { time, actor, action, status, size, level: entry.level };
+};
+
 // ─── Audit logs ──────────────────────────────────────────────────────────────
 const getAuditLogs = async (req, res) => {
   try {
@@ -198,7 +264,13 @@ const getAuditLogs = async (req, res) => {
     }
 
     const logs = lines.slice(-limit).reverse();
-    return res.json({ count: logs.length, logs });
+
+    // ADMIN (non SUPER_ADMIN) : retourner uniquement les champs autorisés
+    const sanitized = req.user.role !== 'SUPER_ADMIN'
+      ? logs.map(sanitizeLogEntry)
+      : logs;
+
+    return res.json({ count: sanitized.length, logs: sanitized, restricted: req.user.role !== 'SUPER_ADMIN' });
   } catch (err) {
     logger.error('Admin getAuditLogs error', { error: err.message });
     return res.status(500).json({ message: 'Erreur interne.' });
