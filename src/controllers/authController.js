@@ -320,7 +320,7 @@ const verifyOTP = async (req, res) => {
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
       config.jwt.secret,
-      { expiresIn: '2h' },
+      { expiresIn: '15m' },
     );
 
     logger.info('Authentication succeeded', {
