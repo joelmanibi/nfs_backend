@@ -7,14 +7,31 @@ const { pipeline }                        = require('stream');
 const { promisify }                       = require('util');
 const bcrypt                              = require('bcryptjs');
 const { Op }                               = require('sequelize');
-const { File, ShareLink, User, sequelize } = require('../models');
-const { encryptToFile, createDecipherStream } = require('../../helpers/crypto');
-const { scanBuffer }                      = require('../../helpers/antivirus');
-const { sendFileReceivedEmail, sendShareLinkEmail, sendDownloadCodeEmail } = require('../../helpers/mailer');
+const { File, ShareLink, User, DownloadLog, sequelize } = require('../models');
+const { generateIv, createDecipherStream } = require('../../helpers/crypto');
+const { scanAndEncrypt, sendFileArrivedEmails, safeUnlink } = require('../../helpers/uploadProcessing');
+const { getQueueConfig, enqueueScanJob }  = require('../../helpers/scanQueue');
+const { sendDownloadCodeEmail }           = require('../../helpers/mailer');
 const logger                              = require('../../config/logger');
 
-const FRONTEND_URL   = process.env.FRONTEND_URL || 'https://securetransport.paa.ci';
-const MAX_LINK_HOURS = 15 * 24; // 360 h
+// Statuts non téléchargeables + message associé (fileController + shareController).
+const NON_DOWNLOADABLE_STATUS = {
+  pending_scan: [423, 'Ce fichier est en cours d’analyse antivirus. Réessayez dans quelques instants.'],
+  infected:     [422, 'Ce fichier a été rejeté par l’antivirus et n’est plus disponible.'],
+  scan_failed:  [422, 'L’analyse antivirus de ce fichier a échoué. Le fichier n’est plus disponible.'],
+};
+
+class HttpError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+const FRONTEND_URL      = process.env.FRONTEND_URL || 'https://securetransport.paa.ci';
+const MAX_LINK_HOURS    = 15 * 24; // 360 h
+const RETENTION_DAYS    = parseInt(process.env.PURGE_RETENTION_DAYS, 10) || 15;
+const RETENTION_MS      = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 const pipelineAsync   = promisify(pipeline);
 const ENCRYPTED_DIR   = path.resolve('assets', 'encrypted');
@@ -43,15 +60,56 @@ const buildAuditMeta = (req, extra = {}) => ({
   ...extra,
 });
 
+const resolveSenderFirstName = async (senderId, fallback = '—') => {
+  try {
+    const senderUser = await User.findByPk(senderId, { attributes: ['firstName'] });
+    return senderUser?.firstName || fallback;
+  } catch (lookupErr) {
+    logger.warn('Could not fetch sender firstName from DB, using fallback value', { error: lookupErr.message });
+    return fallback;
+  }
+};
+
+// ── Mail 2 : code confidentiel (envoyé immédiatement, jamais différé — seul
+// son hash est persisté, impossible de le renvoyer plus tard depuis le worker) ──
+const sendDownloadCodeEmails = async (createdRecords, normalizedDownloadCode, senderFirstName) => {
+  if (!normalizedDownloadCode) return;
+
+  for (const { record } of createdRecords) {
+    if (!record.isProtected) continue;
+    try {
+      await sendDownloadCodeEmail({
+        to:           record.receiverEmail,
+        fileId:       record.id,
+        senderFirstName,
+        reference:    record.reference,
+        downloadCode: normalizedDownloadCode,
+      });
+    } catch (mailError) {
+      logger.error('Download code email failed', {
+        event: 'file_download_code_email_failed',
+        fileId: record.id,
+        receiverEmail: record.receiverEmail,
+        error: mailError.message,
+      });
+    }
+  }
+};
+
 // ─── Upload ───────────────────────────────────────────────────────────────────
 const uploadFile = async (req, res) => {
-  let encryptedPath  = null;
-  let anyPersisted   = false;
+  let quarantinePath    = null;
+  let encryptedDestPath = null;
+  let anyPersisted      = false;
 
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'Aucun fichier fourni.' });
     }
+
+    // multer a déjà streamé le fichier sur disque (assets/quarantine/<uuid>) —
+    // toute erreur à partir d'ici doit nettoyer ce plaintext temporaire.
+    quarantinePath = req.file.path;
 
     // ── Correction encodage filename (busboy décode en latin-1, le navigateur envoie UTF-8) ──
     const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
@@ -84,7 +142,7 @@ const uploadFile = async (req, res) => {
     )];
 
     if (!emailList.length) {
-      return res.status(400).json({ message: 'Au moins un email destinataire est requis.' });
+      throw new HttpError(400, 'Au moins un email destinataire est requis.');
     }
 
     // ── Règle métier : un utilisateur externe ne peut pas envoyer à un externe ──
@@ -110,9 +168,7 @@ const uploadFile = async (req, res) => {
           event: 'file_upload_ext_to_ext_blocked',
           ...buildAuditMeta(req, { blockedRecipients: blockedEmails }),
         });
-        return res.status(403).json({
-          message: 'Un utilisateur externe ne peut pas envoyer de fichier à un autre utilisateur externe. Veuillez sélectionner uniquement des destinataires internes.',
-        });
+        throw new HttpError(403, 'Un utilisateur externe ne peut pas envoyer de fichier à un autre utilisateur externe. Veuillez sélectionner uniquement des destinataires internes.');
       }
     }
 
@@ -133,76 +189,153 @@ const uploadFile = async (req, res) => {
     });
 
     if (protected_ && !normalizedDownloadCode) {
-      return res.status(400).json({ message: 'downloadCode requis pour un fichier protégé.' });
+      throw new HttpError(400, 'downloadCode requis pour un fichier protégé.');
     }
 
-    logger.info('Antivirus scan started', {
-      event: 'antivirus_scan_started',
-      ...uploadMeta,
-    });
+    // ── Identifiants partagés entre tous les destinataires ─────────────────────
+    // Le nom généré par multer pour la quarantaine est réutilisé comme nom du
+    // blob chiffré final (un seul UUID, portable en cas de changement de serveur).
+    const sharedFileId = req.file.filename;
+    encryptedDestPath   = path.join(ENCRYPTED_DIR, sharedFileId);
+    // L'IV est indépendant du contenu : on peut le réserver avant le scan,
+    // ce qui permet de persister les lignes File même en mode asynchrone
+    // (chiffrement différé après scan).
+    const iv = generateIv();
 
-    const scanResult = await scanBuffer(req.file.buffer);
-    const scanMeta = {
-      ...uploadMeta,
-      event: `antivirus_scan_${scanResult.status}`,
-      antivirusHost: scanResult.config.host,
-      antivirusPort: scanResult.config.port,
-      antivirusFailOnError: scanResult.config.failOnError,
-      antivirusEnabled: scanResult.config.enabled,
-    };
-
-    if (scanResult.status === 'infected') {
-      logger.warn('Antivirus detected malware', {
-        ...scanMeta,
-        threat: scanResult.threat,
-        rawResponse: scanResult.rawResponse,
-      });
-
-      return res.status(422).json({ message: 'Le fichier a été rejeté par l’antivirus.' });
-    }
-
-    if (scanResult.status === 'error') {
-      logger[scanResult.config.failOnError ? 'error' : 'warn']('Antivirus scan failed', {
-        ...scanMeta,
-        error: scanResult.error,
-        fallbackToUpload: !scanResult.config.failOnError,
-      });
-
-      if (scanResult.config.failOnError) {
-        return res.status(503).json({
-          message: 'Le service antivirus est indisponible. Réessayez plus tard.',
-        });
-      }
-    }
-
-    if (scanResult.status === 'clean') {
-      logger.info('Antivirus scan clean', {
-        ...scanMeta,
-        rawResponse: scanResult.rawResponse,
-      });
-    }
-
-    if (scanResult.status === 'skipped') {
-      logger.warn('Antivirus scan skipped', {
-        ...scanMeta,
-        reason: scanResult.reason,
-      });
-    }
-
-    // ── Chiffrement (une seule fois, partagé entre tous les destinataires) ──
-    const sharedFileId = randomUUID();
-    const destPath     = path.join(ENCRYPTED_DIR, sharedFileId);
-    encryptedPath      = destPath;
-    const iv           = encryptToFile(req.file.buffer, destPath);
-    // On ne stocke que le nom du fichier (UUID), pas le chemin absolu.
-    // Cela rend le système portable en cas de changement de serveur.
-
-    // ── Hash du code de protection ──
     const downloadCodeHash = protected_
       ? await bcrypt.hash(normalizedDownloadCode, BCRYPT_ROUNDS)
       : null;
 
-    // ── Création des enregistrements DB dans une transaction ──────────────────
+    const queueConfig = getQueueConfig();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Mode synchrone (dev, queue désactivée par défaut) : scan + chiffrement
+    // avant de créer les enregistrements, comme aujourd'hui.
+    // ═══════════════════════════════════════════════════════════════════════
+    if (!queueConfig.enabled) {
+      logger.info('Antivirus scan started', { event: 'antivirus_scan_started', ...uploadMeta });
+
+      const { scanResult, encrypted } = await scanAndEncrypt({
+        quarantinePath,
+        encryptedDestPath,
+        ivHex: iv,
+      });
+
+      const scanMeta = {
+        ...uploadMeta,
+        event: `antivirus_scan_${scanResult.status}`,
+        antivirusHost: scanResult.config.host,
+        antivirusPort: scanResult.config.port,
+        antivirusFailOnError: scanResult.config.failOnError,
+        antivirusEnabled: scanResult.config.enabled,
+      };
+
+      if (scanResult.status === 'infected') {
+        logger.warn('Antivirus detected malware', {
+          ...scanMeta,
+          threat: scanResult.threat,
+          rawResponse: scanResult.rawResponse,
+        });
+
+        return res.status(422).json({ message: 'Le fichier a été rejeté par l’antivirus.' });
+      }
+
+      if (!encrypted) {
+        // Seul cas restant : erreur antivirus bloquante (ANTIVIRUS_FAIL_ON_ERROR=true).
+        // scanAndEncrypt n'a délibérément pas supprimé le plaintext (retry possible
+        // ailleurs) — en mode synchrone sans queue, on abandonne la requête ici.
+        logger.error('Antivirus scan failed', { ...scanMeta, error: scanResult.error });
+        safeUnlink(quarantinePath, { reason: 'sync_scan_error' });
+        return res.status(503).json({
+          message: 'Le service antivirus est indisponible. Réessayez plus tard.',
+        });
+      }
+
+      if (scanResult.status === 'error') {
+        logger.warn('Antivirus scan failed — upload autorisé (failOnError=false)', {
+          ...scanMeta,
+          error: scanResult.error,
+          fallbackToUpload: true,
+        });
+      } else if (scanResult.status === 'clean') {
+        logger.info('Antivirus scan clean', { ...scanMeta, rawResponse: scanResult.rawResponse });
+      } else if (scanResult.status === 'skipped') {
+        logger.warn('Antivirus scan skipped', { ...scanMeta, reason: scanResult.reason });
+      }
+
+      const createdRecords = [];
+      const t = await sequelize.transaction();
+      try {
+        for (const email of emailList) {
+          const fileId = randomUUID();
+          const record = await File.create({
+            id:            fileId,
+            reference:     generateReference(),
+            senderId:      req.user.id,
+            receiverEmail: email,
+            originalName,
+            encryptedPath: sharedFileId,
+            size:          req.file.size,
+            isProtected:   protected_,
+            downloadCodeHash,
+            iv,
+            comment:       comment?.trim() || null,
+            status:        'clean',
+          }, { transaction: t });
+
+          let shareLink = null;
+          if (viaLink) {
+            const token     = randomUUID().replace(/-/g, '');
+            const expiresAt = new Date(Date.now() + linkHours * 3600 * 1000);
+            shareLink = await ShareLink.create({ fileId, token, expiresAt }, { transaction: t });
+          }
+
+          createdRecords.push({ record, shareLink });
+        }
+        await t.commit();
+        anyPersisted = true;
+      } catch (dbErr) {
+        await t.rollback();
+        throw dbErr;
+      }
+
+      logger.info('File(s) uploaded', {
+        event:      'file_upload_succeeded',
+        sharedFileId,
+        senderId:   req.user.id,
+        recipients: emailList,
+        originalName,
+        size:       req.file.size,
+        isProtected: protected_,
+        viaLink,
+      });
+
+      // ── Envoi des emails (hors transaction — l'upload est considéré réussi) ──
+      const senderFirstName = await resolveSenderFirstName(req.user.id, req.user.firstName || '—');
+      await sendDownloadCodeEmails(createdRecords, normalizedDownloadCode, senderFirstName);
+      await sendFileArrivedEmails(createdRecords.map(({ record }) => record.id));
+
+      return res.status(201).json({
+        message: `Fichier envoyé à ${createdRecords.length} destinataire(s).`,
+        files: createdRecords.map(({ record, shareLink }) => ({
+          id:            record.id,
+          originalName:  record.originalName,
+          size:          record.size,
+          isProtected:   record.isProtected,
+          receiverEmail: record.receiverEmail,
+          createdAt:     record.createdAt,
+          status:        record.status,
+          shareToken:    shareLink?.token ?? null,
+          shareExpiresAt: shareLink?.expiresAt ?? null,
+        })),
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Mode asynchrone (prod, queue activée) : persiste en pending_scan et
+    // répond immédiatement — le scan + chiffrement est traité par le worker
+    // (helpers/scanQueue.js → helpers/uploadProcessing.js#processScanJob).
+    // ═══════════════════════════════════════════════════════════════════════
     const createdRecords = [];
     const t = await sequelize.transaction();
     try {
@@ -213,13 +346,14 @@ const uploadFile = async (req, res) => {
           reference:     generateReference(),
           senderId:      req.user.id,
           receiverEmail: email,
-          originalName:  originalName,
+          originalName,
           encryptedPath: sharedFileId,
           size:          req.file.size,
           isProtected:   protected_,
           downloadCodeHash,
           iv,
           comment:       comment?.trim() || null,
+          status:        'pending_scan',
         }, { transaction: t });
 
         let shareLink = null;
@@ -238,8 +372,8 @@ const uploadFile = async (req, res) => {
       throw dbErr;
     }
 
-    logger.info('File(s) uploaded', {
-      event:      'file_upload_succeeded',
+    logger.info('File(s) uploaded — queued for antivirus scan', {
+      event:      'file_upload_queued',
       sharedFileId,
       senderId:   req.user.id,
       recipients: emailList,
@@ -249,66 +383,28 @@ const uploadFile = async (req, res) => {
       viaLink,
     });
 
-    // ── Envoi des emails (hors transaction — l'upload est considéré réussi) ──
+    const senderFirstName = await resolveSenderFirstName(req.user.id, req.user.firstName || '—');
+    await sendDownloadCodeEmails(createdRecords, normalizedDownloadCode, senderFirstName);
 
-    // Récupération du prénom de l'expéditeur depuis la base de données
-    let senderFirstName = req.user.firstName || '—';
+    const fileIds = createdRecords.map(({ record }) => record.id);
     try {
-      const senderUser = await User.findByPk(req.user.id, { attributes: ['firstName'] });
-      if (senderUser?.firstName) senderFirstName = senderUser.firstName;
-    } catch (lookupErr) {
-      logger.warn('Could not fetch sender firstName from DB, using token value', { error: lookupErr.message });
+      await enqueueScanJob({ sharedFileId, quarantinePath, iv, fileIds });
+    } catch (queueErr) {
+      logger.error('Scan job enqueue failed — rolling back upload', {
+        event: 'scan_job_enqueue_failed',
+        sharedFileId,
+        error: queueErr.message,
+      });
+      // Les ShareLink liés sont supprimés en cascade (FK onDelete CASCADE).
+      await File.destroy({ where: { id: { [Op.in]: fileIds } } });
+      safeUnlink(quarantinePath, { reason: 'enqueue_failed' });
+      return res.status(503).json({
+        message: 'Le service de mise en file d’attente est indisponible. Réessayez plus tard.',
+      });
     }
 
-    for (const { record, shareLink } of createdRecords) {
-      try {
-        // ── Mail 1 : notification avec lien ou accès plateforme ──────────────
-        if (viaLink && shareLink) {
-          const shareUrl = `${FRONTEND_URL}/download/${shareLink.token}`;
-          await sendShareLinkEmail({
-            to:              record.receiverEmail,
-            fileId:          record.id,
-            senderFirstName,
-            reference:       record.reference,
-            isProtected:     record.isProtected,
-            shareUrl,
-            comment:         comment?.trim() || null,
-          });
-        } else {
-          await sendFileReceivedEmail({
-            to:              record.receiverEmail,
-            fileId:          record.id,
-            senderFirstName,
-            originalName:    record.originalName,
-            reference:       record.reference,
-            size:            record.size,
-            isProtected:     record.isProtected,
-            comment:         comment?.trim() || null,
-          });
-        }
-
-        // ── Mail 2 : code confidentiel (uniquement si fichier protégé) ───────
-        if (record.isProtected && normalizedDownloadCode) {
-          await sendDownloadCodeEmail({
-            to:           record.receiverEmail,
-            fileId:       record.id,
-            senderFirstName,
-            reference:    record.reference,
-            downloadCode: normalizedDownloadCode,
-          });
-        }
-      } catch (mailError) {
-        logger.error('Recipient notification email failed', {
-          event: 'file_recipient_email_failed',
-          fileId: record.id,
-          receiverEmail: record.receiverEmail,
-          error: mailError.message,
-        });
-      }
-    }
-
-    return res.status(201).json({
-      message: `Fichier envoyé à ${createdRecords.length} destinataire(s).`,
+    return res.status(202).json({
+      message: `Fichier reçu pour ${createdRecords.length} destinataire(s), analyse antivirus en cours.`,
       files: createdRecords.map(({ record, shareLink }) => ({
         id:            record.id,
         originalName:  record.originalName,
@@ -316,19 +412,40 @@ const uploadFile = async (req, res) => {
         isProtected:   record.isProtected,
         receiverEmail: record.receiverEmail,
         createdAt:     record.createdAt,
+        status:        record.status,
         shareToken:    shareLink?.token ?? null,
         shareExpiresAt: shareLink?.expiresAt ?? null,
       })),
     });
   } catch (err) {
-    if (encryptedPath && !anyPersisted && fs.existsSync(encryptedPath)) {
-      try { fs.unlinkSync(encryptedPath); } catch (cleanupError) {
+    if (quarantinePath) {
+      safeUnlink(quarantinePath, { reason: 'upload_error' });
+    }
+
+    if (encryptedDestPath && !anyPersisted && fs.existsSync(encryptedDestPath)) {
+      try { fs.unlinkSync(encryptedDestPath); } catch (cleanupError) {
         logger.error('Encrypted upload cleanup failed', {
           event: 'file_upload_cleanup_failed',
-          encryptedPath,
+          encryptedPath: encryptedDestPath,
           error: cleanupError.message,
         });
       }
+    }
+
+    const statusCode = err.statusCode || 500;
+
+    if (statusCode !== 500) {
+      logger.warn('Upload rejected', {
+        event: 'file_upload_rejected',
+        statusCode,
+        error: err.message,
+        ...buildAuditMeta(req, {
+          originalName: req.file?.originalname
+            ? Buffer.from(req.file.originalname, 'latin1').toString('utf8')
+            : undefined,
+        }),
+      });
+      return res.status(statusCode).json({ message: err.message });
     }
 
     logger.error('Upload error', {
@@ -375,6 +492,20 @@ const downloadFile = async (req, res) => {
       isProtected: file.isProtected,
     });
 
+    // Fichier expiré (durée de vie = 15 jours)
+    const expiresAt = new Date(new Date(file.createdAt).getTime() + RETENTION_MS);
+    if (expiresAt < new Date()) {
+      logger.warn('File download denied — expired', {
+        event: 'file_download_expired',
+        ...downloadMeta,
+        expiresAt,
+      });
+      return res.status(410).json({
+        message: `Ce fichier a expiré le ${expiresAt.toLocaleDateString('fr-FR')}. Il a été supprimé automatiquement.`,
+        expired: true,
+      });
+    }
+
     // L'expéditeur a bloqué le fichier
     if (file.isBlocked) {
       logger.warn('File download blocked by sender', {
@@ -393,6 +524,17 @@ const downloadFile = async (req, res) => {
       });
 
       return res.status(403).json({ message: 'Accès refusé.' });
+    }
+
+    // Fichier pas encore scanné / rejeté / échec de scan → pas de téléchargement
+    if (file.status !== 'clean') {
+      const [statusCode, message] = NON_DOWNLOADABLE_STATUS[file.status] || [422, 'Ce fichier n’est pas disponible.'];
+      logger.warn('File download denied — not clean', {
+        event: 'file_download_not_clean',
+        ...downloadMeta,
+        status: file.status,
+      });
+      return res.status(statusCode).json({ message, status: file.status });
     }
 
     // Vérification du code pour les fichiers protégés
@@ -446,10 +588,17 @@ const downloadFile = async (req, res) => {
 
     await pipelineAsync(readStream, decipherStream, res);
 
-    // ── Enregistrer le statut de téléchargement ───────────────────────────────
+    // ── Enregistrer le statut de téléchargement + l'historique ────────────────
     await file.update({
       downloadedAt: new Date(),
       downloadedBy: req.user.email.toLowerCase(),
+    });
+    await DownloadLog.create({
+      fileId:       file.id,
+      downloadedBy: req.user.email.toLowerCase(),
+      method:       'direct',
+      ip:           req.ip,
+      userAgent:    req.get('user-agent') || null,
     });
 
     logger.info('File download succeeded', {
@@ -467,6 +616,37 @@ const downloadFile = async (req, res) => {
     if (!res.headersSent) {
       return res.status(500).json({ message: 'Erreur interne.', error: err.message });
     }
+  }
+};
+
+// ─── Détail d'un fichier envoyé + historique de téléchargement ───────────────
+/**
+ * GET /api/files/:id — réservé à l'expéditeur du fichier.
+ */
+const getFileDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const file = await File.findByPk(id, {
+      attributes: { exclude: ['encryptedPath', 'downloadCodeHash', 'iv'] },
+      include: [
+        { model: User, as: 'sender', attributes: ['id', 'email', 'firstName', 'lastName'] },
+        { model: ShareLink, as: 'shareLinks' },
+        { model: DownloadLog, as: 'downloadLogs' },
+      ],
+      order: [[{ model: DownloadLog, as: 'downloadLogs' }, 'createdAt', 'DESC']],
+    });
+
+    if (!file) return res.status(404).json({ message: 'Fichier introuvable.' });
+
+    if (file.senderId !== req.user.id) {
+      return res.status(403).json({ message: 'Accès refusé.' });
+    }
+
+    return res.json({ file });
+  } catch (err) {
+    logger.error('getFileDetails error', { error: err.message });
+    return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
 
@@ -572,5 +752,13 @@ const deleteFile = async (req, res) => {
   }
 };
 
-module.exports = { uploadFile, downloadFile, getInbox, getSent, blockFile, deleteFile };
-
+module.exports = {
+  uploadFile,
+  downloadFile,
+  getFileDetails,
+  getInbox,
+  getSent,
+  blockFile,
+  deleteFile,
+  NON_DOWNLOADABLE_STATUS,
+};

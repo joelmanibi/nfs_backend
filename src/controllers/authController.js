@@ -1,13 +1,17 @@
 'use strict';
 
 const bcrypt    = require('bcryptjs');
-const jwt       = require('jsonwebtoken');
 const { Op }    = require('sequelize');
 
 const { User, OTP } = require('../models');
-const config        = require('../../config');
 const logger        = require('../../config/logger');
 const { buildRequestAuditMeta, normalizeEmail } = require('../../helpers/audit');
+const {
+  clearAuthTokenCookie,
+  createAuthToken,
+  serializeAuthUser,
+  setAuthTokenCookie,
+} = require('../../helpers/authSession');
 const { sendOTPEmail, sendPasswordResetEmail } = require('../../helpers/mailer');
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -182,6 +186,15 @@ const requestOTP = async (req, res) => {
       return res.status(200).json({ registered: false, message: "Aucun compte associé à cet email." });
     }
 
+    // Compte bloqué par un administrateur
+    if (user.isBlocked) {
+      logger.warn('OTP request blocked — account blocked', {
+        event: 'auth_otp_request_blocked',
+        ...buildAuthMeta(req, { userId: user.id }),
+      });
+      return res.status(403).json({ blocked: true, message: 'Votre compte a été bloqué. Contactez un administrateur.' });
+    }
+
     // Compte en attente d'approbation
     if (!user.isApproved) {
       logger.warn('OTP request blocked — account not approved', {
@@ -227,7 +240,7 @@ const requestOTP = async (req, res) => {
 
 /**
  * POST /api/auth/verify-otp
- * Valide l'OTP et retourne un JWT (2h).
+ * Valide l'OTP et ouvre une session JWT en cookie HttpOnly.
  */
 const verifyOTP = async (req, res) => {
   const { email, otp } = req.body;
@@ -308,6 +321,15 @@ const verifyOTP = async (req, res) => {
       return res.status(404).json({ message: 'Utilisateur introuvable.' });
     }
 
+    // Blocage si compte bloqué par un administrateur
+    if (user.isBlocked) {
+      logger.warn('OTP login blocked — account blocked', {
+        event: 'auth_verify_blocked',
+        ...buildAuthMeta(req, { userId: user.id }),
+      });
+      return res.status(403).json({ blocked: true, message: 'Votre compte a été bloqué. Contactez un administrateur.' });
+    }
+
     // Blocage si compte non approuvé
     if (!user.isApproved) {
       logger.warn('OTP login blocked — account not approved', {
@@ -317,11 +339,8 @@ const verifyOTP = async (req, res) => {
       return res.status(403).json({ pending: true, message: "Votre compte est en attente de validation par un administrateur." });
     }
 
-    const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      config.jwt.secret,
-      { expiresIn: '15m' },
-    );
+    const token = createAuthToken(user);
+    setAuthTokenCookie(res, token);
 
     logger.info('Authentication succeeded', {
       event: 'auth_authentication_succeeded',
@@ -333,8 +352,7 @@ const verifyOTP = async (req, res) => {
 
     return res.status(200).json({
       message: 'Authentification réussie.',
-      token,
-      user: { id: user.id, email: user.email, role: user.role },
+      user: serializeAuthUser(user),
     });
   } catch (err) {
     logger.error('Authentication flow failed', {
@@ -364,6 +382,11 @@ const loginWithPassword = async (req, res) => {
 
     if (!user) {
       return res.status(200).json({ registered: false, message: 'Aucun compte associé à cet email.' });
+    }
+
+    // Compte bloqué par un administrateur
+    if (user.isBlocked) {
+      return res.status(403).json({ blocked: true, message: 'Votre compte a été bloqué. Contactez un administrateur.' });
     }
 
     // Compte en attente d'approbation
@@ -545,7 +568,7 @@ const changePassword = async (req, res) => {
     }
 
     const newHash = await bcrypt.hash(newPassword.trim(), BCRYPT_ROUNDS);
-    await user.update({ passwordHash: newHash });
+    await user.update({ passwordHash: newHash, mustChangePassword: false });
 
     logger.info('Password changed', { event: 'auth_password_changed', userId: user.id });
     return res.status(200).json({ message: 'Mot de passe mis à jour avec succès.' });
@@ -555,5 +578,42 @@ const changePassword = async (req, res) => {
   }
 };
 
-module.exports = { register, requestOTP, verifyOTP, loginWithPassword, forgotPassword, resetPassword, changePassword };
+const getMe = async (req, res) => {
+  try {
+    const user = await User.findByPk(req.user.id);
+
+    if (!user || !user.isApproved || user.isBlocked) {
+      clearAuthTokenCookie(res);
+
+      return res.status(401).json({ message: 'Non authentifié.' });
+    }
+
+    return res.status(200).json({ user: serializeAuthUser(user) });
+  } catch (err) {
+    logger.error('Get current user error', {
+      event: 'auth_me_failed',
+      error: err.message,
+      ...buildRequestAuditMeta(req),
+    });
+
+    return res.status(500).json({ message: 'Erreur interne.', error: err.message });
+  }
+};
+
+const logout = async (_req, res) => {
+  clearAuthTokenCookie(res);
+  return res.status(204).send();
+};
+
+module.exports = {
+  register,
+  requestOTP,
+  verifyOTP,
+  loginWithPassword,
+  forgotPassword,
+  resetPassword,
+  changePassword,
+  getMe,
+  logout,
+};
 

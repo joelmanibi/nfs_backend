@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node serve.js",
     "dev": "nodemon serve.js",
-    "test": "node --test tests/vault.test.js tests/antivirus.test.js tests/mailer.test.js tests/audit.test.js",
+    "test": "node --test tests/vault.test.js tests/antivirus.test.js tests/mailer.test.js tests/audit.test.js tests/crypto.test.js tests/scanQueue.test.js tests/quarantineCleanup.test.js",
     "migrate": "sequelize-cli db:migrate",
     "seed": "sequelize-cli db:seed --seed 20260303000001-admin-user.js",
     "migrate:undo": "sequelize-cli db:migrate:undo:all",
@@ -17,6 +17,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "archiver": "^8.0.0",
+    "basic-ftp": "^6.0.1",
     "bcryptjs": "^3.0.2",
     "body-parser": "^1.20.3",
     "dotenv": "^16.4.7",
@@ -30,11 +32,13 @@
     "multer": "^1.4.5-lts.1",
     "mysql": "^2.18.1",
     "mysql2": "^3.14.0",
+    "node-cron": "^4.2.1",
     "nodemailer": "^6.10.0",
     "redis": "^4.7.0",
     "sequelize": "^6.37.6",
     "socket.io": "^4.8.1",
     "speakeasy": "^2.0.0",
+    "ssh2-sftp-client": "^12.1.1",
     "uniqid": "^5.4.0",
     "winston": "^3.19.0"
   },

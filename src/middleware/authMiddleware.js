@@ -4,15 +4,17 @@ const jwt    = require('jsonwebtoken');
 const config = require('../../config');
 const logger = require('../../config/logger');
 const { buildRequestAuditMeta } = require('../../helpers/audit');
+const { extractTokenFromRequest } = require('../../helpers/authSession');
 
 /**
  * Vérifie le JWT dans le header Authorization: Bearer <token>
+ * ou dans le cookie HttpOnly NFS_token.
  * Attache req.user = { id, email, role } si valide.
  */
 const verifyToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
+  const token = extractTokenFromRequest(req);
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!token) {
     logger.warn('Authentication token missing or malformed', {
       event: 'auth_token_missing',
       ...buildRequestAuditMeta(req),
@@ -20,9 +22,6 @@ const verifyToken = (req, res, next) => {
 
     return res.status(401).json({ message: 'Token manquant ou mal formaté.' });
   }
-
-  const token = authHeader.split(' ')[1];
-
   try {
     req.user = jwt.verify(token, config.jwt.secret);
     next();

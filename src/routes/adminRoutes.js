@@ -5,8 +5,14 @@ const { verifyToken }  = require('../middleware/authMiddleware');
 const { checkRole }    = require('../middleware/roleMiddleware');
 const {
   getStats,
+  getStatsTimeseries,
+  getStatsExtensions,
+  getTopSenders,
+  createUser,
   getUsers,
+  getUserStats,
   updateUser,
+  blockUser,
   deleteUser,
   getTransfers,
   getActiveTransfers,
@@ -24,10 +30,16 @@ router.use(verifyToken, checkRole('ADMIN', 'SUPER_ADMIN'));
 
 // Stats
 router.get('/stats', getStats);
+router.get('/stats/timeseries', getStatsTimeseries);
+router.get('/stats/extensions', getStatsExtensions);
+router.get('/stats/top-senders', getTopSenders);
 
-// Users — lecture ouverte aux deux rôles; écriture réservée au SUPER_ADMIN
+// Users — création + lecture ouvertes aux deux rôles; modification/suppression réservées au SUPER_ADMIN
+router.post('/users',        createUser);
 router.get('/users',         getUsers);
+router.get('/users/:id/stats', getUserStats);
 router.patch('/users/:id',   checkRole('SUPER_ADMIN'), updateUser);
+router.patch('/users/:id/block', blockUser);
 router.delete('/users/:id',  checkRole('SUPER_ADMIN'), deleteUser);
 
 // Transfers

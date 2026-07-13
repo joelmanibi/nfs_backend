@@ -1,11 +1,13 @@
 'use strict';
 
-const net = require('net');
+const net  = require('net');
+const path = require('path');
 
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const CHUNK_SIZE = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_MAX_STREAM_BYTES = 25 * 1024 * 1024;
+const QUARANTINE_DIR = path.resolve('assets', 'quarantine');
 
 const asBoolean = (value, defaultValue = false) => {
   if (value === undefined || value === null || value === '') return defaultValue;
@@ -117,6 +119,78 @@ const sendBufferToClamd = (buffer, config) => new Promise((resolve, reject) => {
   });
 });
 
+const sendPathToClamd = (filePath, config) => new Promise((resolve, reject) => {
+  const resolvedPath = path.resolve(filePath);
+  if (!resolvedPath.startsWith(QUARANTINE_DIR + path.sep)) {
+    reject(new Error('scanPath refuse les chemins hors du répertoire de quarantaine.'));
+    return;
+  }
+
+  const socket = net.createConnection({ host: config.host, port: config.port });
+  const responseChunks = [];
+  let settled = false;
+  let timeout = null;
+
+  const cleanup = () => {
+    if (timeout) clearTimeout(timeout);
+    socket.removeAllListeners();
+    socket.destroy();
+  };
+
+  const finish = (handler, value) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    handler(value);
+  };
+
+  timeout = setTimeout(() => {
+    finish(reject, new Error(`Timeout antivirus après ${config.timeoutMs}ms.`));
+  }, config.timeoutMs);
+
+  socket.on('connect', () => {
+    socket.write(`zSCAN ${resolvedPath}\0`);
+  });
+
+  socket.on('data', (chunk) => {
+    responseChunks.push(chunk);
+  });
+
+  socket.on('end', () => {
+    finish(resolve, Buffer.concat(responseChunks).toString('utf8'));
+  });
+
+  socket.on('close', (hadError) => {
+    if (!hadError && !settled) {
+      finish(resolve, Buffer.concat(responseChunks).toString('utf8'));
+    }
+  });
+
+  socket.on('error', (error) => {
+    finish(reject, new Error(`Connexion antivirus impossible : ${error.message}`));
+  });
+});
+
+/**
+ * Scanne un fichier par son chemin disque (commande clamd zSCAN) plutôt
+ * que par buffer réseau (INSTREAM). Le fichier doit résider dans le
+ * répertoire de quarantaine ; clamd doit avoir accès à ce chemin (même hôte).
+ */
+async function scanPath(filePath) {
+  const config = getAntivirusConfig();
+
+  if (!config.enabled) {
+    return { status: 'skipped', reason: 'disabled', config };
+  }
+
+  try {
+    const responseText = await sendPathToClamd(filePath, config);
+    return { ...parseScanResponse(responseText), config };
+  } catch (error) {
+    return { status: 'error', error: error.message, config };
+  }
+}
+
 async function scanBuffer(buffer) {
   const config = getAntivirusConfig();
 
@@ -136,4 +210,6 @@ module.exports = {
   getAntivirusConfig,
   parseScanResponse,
   scanBuffer,
+  scanPath,
+  QUARANTINE_DIR,
 };

@@ -370,14 +370,85 @@ const buildAccountRejectedEmail = ({ firstName, email }) => ({
   `,
 });
 
+// ── Email : compte débloqué par un admin ─────────────────────────────────────
+const buildAccountUnblockedEmail = ({ firstName, email }) => ({
+  to: email,
+  subject: `[PAA Secure Transport] Votre compte a été débloqué`,
+  text: `Bonjour ${firstName},\n\nVotre compte PAA Secure Transport a été débloqué par un administrateur. Vous pouvez de nouveau vous connecter.\n${process.env.FRONTEND_URL || 'https://securetransport.paa.ci'}/login`,
+  html: `
+    <p>Bonjour <strong>${escapeHtml(firstName)}</strong>,</p>
+    <p>Votre compte <strong>PAA Secure Transport</strong> a été débloqué par un administrateur. Vous pouvez de nouveau accéder à la plateforme.</p>
+    <p style="margin-top:16px">
+      <a href="${process.env.FRONTEND_URL || 'https://securetransport.paa.ci'}/login" style="display:inline-block;padding:10px 20px;background:#16a34a;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">
+        ✅ Accéder à la plateforme
+      </a>
+    </p>
+  `,
+});
+
 const sendAccountPendingEmail = (payload) =>
   sendMail(buildAccountPendingEmail(payload), { mailType: 'account_pending' });
+
+const sendAccountUnblockedEmail = (payload) =>
+  sendMail(buildAccountUnblockedEmail(payload), { mailType: 'account_unblocked' });
 
 const sendAccountApprovedEmail = (payload) =>
   sendMail(buildAccountApprovedEmail(payload), { mailType: 'account_approved' });
 
 const sendAccountRejectedEmail = (payload) =>
   sendMail(buildAccountRejectedEmail(payload), { mailType: 'account_rejected' });
+
+// ── Email : compte créé par un admin, avec mot de passe temporaire ──────────
+const buildAccountCreatedEmail = ({ to, firstName, email, password, createdByFirstName }) => {
+  const safeName      = escapeHtml(firstName || 'utilisateur');
+  const safeEmail     = escapeHtml(email);
+  const safeCreatedBy = createdByFirstName ? escapeHtml(createdByFirstName) : null;
+  const safePassword  = escapeHtml(password);
+  const loginUrl      = `${process.env.FRONTEND_URL || 'https://securetransport.paa.ci'}/login`;
+
+  return {
+    to,
+    subject: `[${APP_NAME}] Votre compte a été créé`,
+    text: [
+      `Bonjour ${firstName || ''},`,
+      '',
+      `Un compte ${APP_NAME} a été créé pour vous${createdByFirstName ? ` par ${createdByFirstName}` : ''}.`,
+      '',
+      `Email : ${email}`,
+      `Mot de passe temporaire : ${password}`,
+      '',
+      'Vous devrez le modifier dès votre première connexion.',
+      '',
+      loginUrl,
+      '',
+      'Important : ce mot de passe est confidentiel. Ne le partagez pas.',
+    ].join('\n'),
+    html: `
+      <p>Bonjour <strong>${safeName}</strong>,</p>
+      <p>Un compte <strong>${APP_NAME}</strong> a été créé pour vous${safeCreatedBy ? ` par <strong>${safeCreatedBy}</strong>` : ''}.</p>
+      <p style="margin:20px 0 8px">Identifiant : <strong>${safeEmail}</strong></p>
+      <p style="margin:0 0 8px">Mot de passe temporaire :</p>
+      <h2 style="letter-spacing:4px;background:#f1f5f9;display:inline-block;padding:10px 20px;border-radius:8px;font-family:monospace">${safePassword}</h2>
+      <p style="margin-top:16px">
+        <a href="${loginUrl}" style="display:inline-block;padding:10px 20px;background:#16a34a;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">
+          ✅ Se connecter
+        </a>
+      </p>
+      <p style="margin-top:16px;font-size:13px;color:#b45309">
+        <strong>⚠ Vous devrez modifier ce mot de passe dès votre première connexion.</strong>
+      </p>
+      <p style="margin-top:12px;font-size:12px;color:#dc2626">
+        <strong>Important :</strong> ce mot de passe est <strong>confidentiel</strong>. Ne le partagez à personne d'autre que vous-même.
+      </p>
+    `,
+  };
+};
+
+const sendAccountCreatedEmail = (payload) =>
+  sendMail(buildAccountCreatedEmail(payload), {
+    mailType: 'account_created_by_admin',
+    extra: { recipientEmail: normalizeEmail(payload.to) },
+  });
 
 // ── Email de réinitialisation de mot de passe ────────────────────────────────
 const buildPasswordResetEmail = ({ to, firstName, resetUrl, expiryMinutes }) => {
@@ -428,6 +499,8 @@ module.exports = {
   buildAccountPendingEmail,
   buildAccountApprovedEmail,
   buildAccountRejectedEmail,
+  buildAccountCreatedEmail,
+  buildAccountUnblockedEmail,
   formatFileSize,
   sendFileReceivedEmail,
   sendShareLinkEmail,
@@ -437,4 +510,6 @@ module.exports = {
   sendAccountPendingEmail,
   sendAccountApprovedEmail,
   sendAccountRejectedEmail,
+  sendAccountCreatedEmail,
+  sendAccountUnblockedEmail,
 };

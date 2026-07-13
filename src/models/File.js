@@ -56,6 +56,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: false,
       },
+      status: {
+        type: DataTypes.ENUM('pending_scan', 'clean', 'infected', 'scan_failed'),
+        allowNull: false,
+        defaultValue: 'clean',
+      },
       downloadCodeHash: {
         type: DataTypes.STRING,
         allowNull: true,

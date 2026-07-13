@@ -6,15 +6,18 @@ const { randomUUID }           = require('crypto');
 const { promisify }            = require('util');
 const { pipeline }             = require('stream');
 const bcrypt                   = require('bcryptjs');
-const { File, ShareLink }      = require('../models');
+const { File, ShareLink, DownloadLog } = require('../models');
 const { createDecipherStream } = require('../../helpers/crypto');
+const { NON_DOWNLOADABLE_STATUS } = require('./fileController');
 const logger                   = require('../../config/logger');
 
 const pipelineAsync  = promisify(pipeline);
 const ENCRYPTED_DIR  = path.resolve('assets', 'encrypted');
 
 // Durée max autorisée : 15 jours
-const MAX_HOURS = 15 * 24;
+const MAX_HOURS       = 15 * 24;
+const RETENTION_DAYS  = parseInt(process.env.PURGE_RETENTION_DAYS, 10) || 15;
+const RETENTION_MS    = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 // ─── Créer un lien de partage ─────────────────────────────────────────────────
 /**
@@ -92,6 +95,38 @@ const downloadViaToken = async (req, res) => {
     }
 
     const file = link.file;
+
+    // Fichier expiré (durée de vie = 15 jours à partir de la création)
+    const fileExpiresAt = new Date(new Date(file.createdAt).getTime() + RETENTION_MS);
+    if (fileExpiresAt < new Date()) {
+      return res.status(410).json({
+        message: `Ce fichier a expiré le ${fileExpiresAt.toLocaleDateString('fr-FR')}. Il a été supprimé automatiquement.`,
+        expired: true,
+      });
+    }
+
+    // L'expéditeur a bloqué le fichier
+    if (file.isBlocked) {
+      logger.warn('Public share download denied — blocked by sender', {
+        event: 'share_link_download_blocked',
+        token,
+        fileId: file.id,
+      });
+      return res.status(403).json({ message: 'Ce fichier a été bloqué par l\'expéditeur.' });
+    }
+
+    // Fichier pas encore scanné / rejeté / échec de scan → pas de téléchargement
+    if (file.status !== 'clean') {
+      const [statusCode, message] = NON_DOWNLOADABLE_STATUS[file.status] || [422, 'Ce fichier n’est pas disponible.'];
+      logger.warn('Public share download denied — not clean', {
+        event: 'share_link_download_not_clean',
+        token,
+        fileId: file.id,
+        status: file.status,
+      });
+      return res.status(statusCode).json({ message, status: file.status });
+    }
+
     // Reconstruction du chemin absolu (rétrocompat : anciens enregistrements ont un chemin absolu)
     const fullEncryptedPath = file && (
       path.isAbsolute(file.encryptedPath)
@@ -138,6 +173,19 @@ const downloadViaToken = async (req, res) => {
 
     await pipelineAsync(readStream, decipherStream, res);
 
+    // ── Enregistrer le statut de téléchargement + l'historique (comme pour le téléchargement authentifié) ──
+    await file.update({
+      downloadedAt: new Date(),
+      downloadedBy: file.receiverEmail,
+    });
+    await DownloadLog.create({
+      fileId:       file.id,
+      downloadedBy: file.receiverEmail,
+      method:       'link',
+      ip:           req.ip,
+      userAgent:    req.get('user-agent') || null,
+    });
+
     logger.info('Public share download succeeded', {
       event: 'share_link_download_succeeded',
       token,
@@ -162,7 +210,7 @@ const getShareLinkInfo = async (req, res) => {
 
     const link = await ShareLink.findOne({
       where: { token },
-      include: [{ model: File, as: 'file', attributes: ['originalName', 'size', 'isProtected'] }],
+      include: [{ model: File, as: 'file', attributes: ['originalName', 'size', 'isProtected', 'status', 'isBlocked'] }],
     });
 
     if (!link) {
@@ -180,6 +228,8 @@ const getShareLinkInfo = async (req, res) => {
       originalName: link.file.originalName,
       size:         link.file.size,
       isProtected:  link.file.isProtected,
+      status:       link.file.status,
+      isBlocked:    link.file.isBlocked,
       expiresAt:    link.expiresAt,
     });
   } catch (err) {

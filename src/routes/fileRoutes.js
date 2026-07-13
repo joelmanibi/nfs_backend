@@ -6,6 +6,7 @@ const { verifyToken } = require('../middleware/authMiddleware');
 const {
   uploadFile,
   downloadFile,
+  getFileDetails,
   getInbox,
   getSent,
   blockFile,
@@ -36,6 +37,10 @@ router.get('/inbox', getInbox);
 
 // GET /api/files/sent
 router.get('/sent', getSent);
+
+// ─── Détail d'un fichier (expéditeur uniquement) ───────────────────────────────
+// GET /api/files/:id
+router.get('/:id', getFileDetails);
 
 // ─── Sender actions ───────────────────────────────────────────────────────────
 // PATCH /api/files/:id/block  (toggle bloquer/débloquer)

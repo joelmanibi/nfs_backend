@@ -18,6 +18,8 @@ const isVaultEnabled = () => asBoolean(process.env.VAULT_ENABLED, false);
 const getVaultConfig = () => ({
   addr: process.env.VAULT_ADDR,
   token: process.env.VAULT_TOKEN,
+  roleId: process.env.VAULT_ROLE_ID,
+  secretId: process.env.VAULT_SECRET_ID,
   namespace: process.env.VAULT_NAMESPACE,
   secretPath: (process.env.VAULT_SECRET_PATH || '').replace(/^\/+/, ''),
   kvVersion: String(process.env.VAULT_KV_VERSION || '2'),
@@ -30,18 +32,20 @@ const ensureVaultConfig = (config) => {
   const missing = [];
 
   if (!config.addr) missing.push('VAULT_ADDR');
-  if (!config.token) missing.push('VAULT_TOKEN');
   if (!config.secretPath) missing.push('VAULT_SECRET_PATH');
+  if (!config.token && !(config.roleId && config.secretId)) {
+    missing.push('VAULT_TOKEN ou VAULT_ROLE_ID + VAULT_SECRET_ID');
+  }
 
   if (missing.length > 0) {
     throw new Error(`Vault activé mais configuration incomplète : ${missing.join(', ')}`);
   }
 };
 
-const requestJson = (url, headers, skipTlsVerify) => {
+const requestJson = (url, { headers = {}, method = 'GET', body, skipTlsVerify = false } = {}) => {
   const transport = url.protocol === 'http:' ? http : https;
   const options = {
-    method: 'GET',
+    method,
     headers,
   };
 
@@ -83,6 +87,10 @@ const requestJson = (url, headers, skipTlsVerify) => {
       reject(new Error(`Impossible de joindre Vault : ${error.message}`));
     });
 
+    if (body !== undefined) {
+      req.write(JSON.stringify(body));
+    }
+
     req.end();
   });
 };
@@ -97,6 +105,68 @@ const normalizeSecretValue = (value) => {
 const extractSecrets = (payload, kvVersion) => {
   if (kvVersion === '1') return payload.data;
   return payload.data && payload.data.data;
+};
+
+const buildSecretApiPath = (secretPath, kvVersion) => {
+  const normalizedPath = String(secretPath || '').replace(/^\/+/, '');
+  if (!normalizedPath) return '/v1/';
+  if (kvVersion !== '2') return `/v1/${normalizedPath}`;
+
+  const parts = normalizedPath.split('/').filter(Boolean);
+  if (parts[1] === 'data') {
+    return `/v1/${parts.join('/')}`;
+  }
+
+  if (parts.length === 1) {
+    return `/v1/${parts[0]}/data`;
+  }
+
+  return `/v1/${parts[0]}/data/${parts.slice(1).join('/')}`;
+};
+
+const buildVaultHeaders = (config, token) => {
+  const headers = {};
+
+  if (token) {
+    headers['X-Vault-Token'] = token;
+  }
+
+  if (config.namespace) {
+    headers['X-Vault-Namespace'] = config.namespace;
+  }
+
+  return headers;
+};
+
+const resolveVaultToken = async (config) => {
+  if (config.token) {
+    return config.token;
+  }
+
+  const loginUrl = new URL(
+    '/v1/auth/approle/login',
+    config.addr.endsWith('/') ? config.addr : `${config.addr}/`,
+  );
+
+  const payload = await requestJson(loginUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...buildVaultHeaders(config),
+    },
+    body: {
+      role_id: config.roleId,
+      secret_id: config.secretId,
+    },
+    skipTlsVerify: config.skipTlsVerify,
+  });
+
+  const token = payload && payload.auth && payload.auth.client_token;
+  if (!token) {
+    throw new Error('Vault AppRole n’a pas retourné de token exploitable.');
+  }
+
+  return token;
 };
 
 const fallbackToEnvironment = (config, error) => {
@@ -128,16 +198,13 @@ async function loadVaultSecrets() {
   try {
     ensureVaultConfig(config);
 
-    const url = new URL(`/v1/${config.secretPath}`, config.addr.endsWith('/') ? config.addr : `${config.addr}/`);
-    const headers = {
-      'X-Vault-Token': config.token,
-    };
-
-    if (config.namespace) {
-      headers['X-Vault-Namespace'] = config.namespace;
-    }
-
-    const payload = await requestJson(url, headers, config.skipTlsVerify);
+    const token = await resolveVaultToken(config);
+    const secretApiPath = buildSecretApiPath(config.secretPath, config.kvVersion);
+    const url = new URL(secretApiPath, config.addr.endsWith('/') ? config.addr : `${config.addr}/`);
+    const payload = await requestJson(url, {
+      headers: buildVaultHeaders(config, token),
+      skipTlsVerify: config.skipTlsVerify,
+    });
     const secrets = extractSecrets(payload, config.kvVersion);
 
     if (!secrets || typeof secrets !== 'object') {

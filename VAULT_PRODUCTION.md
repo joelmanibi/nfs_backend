@@ -73,6 +73,15 @@ ANTIVIRUS_PORT=3310
 ANTIVIRUS_TIMEOUT_MS=10000
 ANTIVIRUS_MAX_STREAM_BYTES=26214400
 ANTIVIRUS_FAIL_ON_ERROR=true
+
+# ── Queue de scan asynchrone (Redis Streams) ──────────────────────────────────
+# Désactivée par défaut en dev (aucun Redis requis en local), activée par défaut en prod.
+ANTIVIRUS_QUEUE_ENABLED=true
+REDIS_URL=redis://127.0.0.1:6379
+MAX_CONCURRENT_SCANS=4
+SCAN_JOB_MAX_RETRIES=3
+QUARANTINE_TTL_MINUTES=60
+QUARANTINE_CLEANUP_CRON=*/15 * * * *
 ```
 
 > `VAULT_SKIP_TLS_VERIFY` : ne pas définir (défaut = `false`). Utiliser uniquement en dépannage avec certificat autosigné.

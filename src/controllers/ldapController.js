@@ -1,12 +1,11 @@
 'use strict';
 
 const { Client }   = require('ldapts');
-const jwt          = require('jsonwebtoken');
 
 const { User }     = require('../models');
-const config       = require('../../config');
 const logger       = require('../../config/logger');
 const { buildRequestAuditMeta } = require('../../helpers/audit');
+const { createAuthToken, serializeAuthUser, setAuthTokenCookie } = require('../../helpers/authSession');
 
 // ─── Config LDAP depuis .env ──────────────────────────────────────────────────
 // Contrôleur PAA : A-SRV-DC-01 — LDAPS port 636 — domaine paa.local
@@ -102,16 +101,22 @@ const loginWithLDAP = async (req, res) => {
       await user.update({ firstName: adFirstName, lastName: adLastName, isInternalUser: true });
     }
 
+    if (user.isBlocked) {
+      logger.warn('LDAP login blocked — account blocked', {
+        event: 'auth_ldap_blocked',
+        userId: user.id,
+        ...buildRequestAuditMeta(req),
+      });
+      return res.status(403).json({ blocked: true, message: 'Votre compte a été bloqué. Contactez un administrateur.' });
+    }
+
     if (!user.isApproved) {
       return res.status(403).json({ pending: true, message: 'Votre compte est en attente de validation.' });
     }
 
     // ── 6. Émission du JWT (même format que le reste de l'app) ───────────────
-    const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      config.jwt.secret,
-      { expiresIn: '15m' },
-    );
+    const token = createAuthToken(user);
+    setAuthTokenCookie(res, token);
 
     logger.info('LDAP authentication succeeded', {
       event: 'auth_ldap_succeeded',
@@ -121,8 +126,7 @@ const loginWithLDAP = async (req, res) => {
 
     return res.status(200).json({
       message: 'Authentification PAA réussie.',
-      token,
-      user: { id: user.id, email: user.email, role: user.role },
+      user: serializeAuthUser(user),
     });
 
   } catch (err) {

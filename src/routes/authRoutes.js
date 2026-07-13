@@ -5,7 +5,7 @@ const rateLimit    = require('express-rate-limit');
 const { verifyToken } = require('../middleware/authMiddleware');
 const {
   register, requestOTP, verifyOTP,
-  loginWithPassword, forgotPassword, resetPassword, changePassword,
+  loginWithPassword, forgotPassword, resetPassword, changePassword, getMe, logout,
 } = require('../controllers/authController');
 const { loginWithLDAP } = require('../controllers/ldapController');
 
@@ -72,6 +72,8 @@ router.post('/login-ldap',       passwordLimiter, loginWithLDAP);
 router.post('/forgot-password',  passwordLimiter, forgotPassword);
 router.post('/reset-password',   passwordLimiter, resetPassword);
 router.post('/change-password',  verifyToken,     changePassword);
+router.get('/me',                verifyToken,     getMe);
+router.post('/logout',           logout);
 
 module.exports = router;
 
