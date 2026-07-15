@@ -4,13 +4,23 @@ const jwt = require('jsonwebtoken');
 const config = require('../config');
 
 const AUTH_COOKIE_NAME = 'NFS_token';
-const AUTH_TOKEN_EXPIRES_IN = '15m';
-const AUTH_TOKEN_MAX_AGE_SECONDS = 15 * 60;
 
 const asBoolean = (value, defaultValue = false) => {
   if (value === undefined || value === null || value === '') return defaultValue;
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 };
+
+const asPositiveInteger = (value, defaultValue) => {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+};
+
+// Durée de session configurable via .env (défaut : 15 min) — une seule valeur
+// dérive à la fois l'expiration du JWT et le Max-Age du cookie qui le porte,
+// pour qu'ils ne puissent jamais diverger.
+const AUTH_TOKEN_TTL_MINUTES    = asPositiveInteger(process.env.AUTH_TOKEN_TTL_MINUTES, 15);
+const AUTH_TOKEN_MAX_AGE_SECONDS = AUTH_TOKEN_TTL_MINUTES * 60;
+const AUTH_TOKEN_EXPIRES_IN     = AUTH_TOKEN_MAX_AGE_SECONDS;
 
 const useSecureCookies = () => {
   if (process.env.AUTH_COOKIE_SECURE !== undefined) {
