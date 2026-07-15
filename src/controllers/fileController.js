@@ -219,6 +219,7 @@ const uploadFile = async (req, res) => {
         quarantinePath,
         encryptedDestPath,
         ivHex: iv,
+        context: { sharedFileId },
       });
 
       const scanMeta = {

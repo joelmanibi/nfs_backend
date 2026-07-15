@@ -41,22 +41,73 @@ const safeUnlink = (filePath, context = {}) => {
  *  - clean / skipped / erreur non bloquante → chiffre en streaming vers
  *    encryptedDestPath puis supprime le plaintext de quarantaine.
  * Ne lève jamais pour un verdict antivirus normal (même contrat que
- * scanBuffer côté helpers/antivirus.js).
+ * scanBuffer côté helpers/antivirus.js). `context` (sharedFileId, fileIds…)
+ * sert uniquement à corréler les lignes de log entre elles.
  */
-const scanAndEncrypt = async ({ quarantinePath, encryptedDestPath, ivHex }) => {
+const scanAndEncrypt = async ({ quarantinePath, encryptedDestPath, ivHex, context = {} }) => {
+  logger.debug('File processing: scan step started', {
+    event: 'file_processing_scan_started',
+    quarantinePath,
+    ...context,
+  });
+
+  const scanStartedAt = Date.now();
   const scanResult = await scanPath(quarantinePath);
+  const scanDurationMs = Date.now() - scanStartedAt;
+
+  logger.debug('File processing: scan step finished', {
+    event: 'file_processing_scan_finished',
+    status: scanResult.status,
+    scanDurationMs,
+    ...(scanResult.threat ? { threat: scanResult.threat } : {}),
+    ...(scanResult.error ? { error: scanResult.error } : {}),
+    ...context,
+  });
 
   if (scanResult.status === 'infected') {
-    safeUnlink(quarantinePath, { reason: 'infected' });
+    logger.warn('File processing: rejected as infected', {
+      event: 'file_processing_infected',
+      threat: scanResult.threat,
+      ...context,
+    });
+    safeUnlink(quarantinePath, { reason: 'infected', ...context });
     return { scanResult, encrypted: false };
   }
 
   if (scanResult.status === 'error' && scanResult.config.failOnError) {
+    logger.error('File processing: halted, blocking antivirus error', {
+      event: 'file_processing_scan_error_blocking',
+      error: scanResult.error,
+      ...context,
+    });
     return { scanResult, encrypted: false };
   }
 
-  await encryptFileStream(quarantinePath, encryptedDestPath, ivHex);
-  safeUnlink(quarantinePath, { reason: 'encrypted' });
+  logger.debug('File processing: encryption step started', {
+    event: 'file_processing_encryption_started',
+    encryptedDestPath,
+    ...context,
+  });
+
+  const encryptStartedAt = Date.now();
+  try {
+    await encryptFileStream(quarantinePath, encryptedDestPath, ivHex);
+  } catch (encryptError) {
+    logger.error('File processing: encryption step failed', {
+      event: 'file_processing_encryption_failed',
+      error: encryptError.message,
+      ...context,
+    });
+    throw encryptError;
+  }
+
+  logger.debug('File processing: encryption step finished', {
+    event: 'file_processing_encryption_finished',
+    encryptDurationMs: Date.now() - encryptStartedAt,
+    ...context,
+  });
+
+  safeUnlink(quarantinePath, { reason: 'encrypted', ...context });
   return { scanResult, encrypted: true };
 };
 
@@ -70,6 +121,13 @@ const applyScanOutcomeToFiles = async ({ fileIds, encrypted, scanResult }) => {
     : (scanResult.status === 'infected' ? 'infected' : 'scan_failed');
 
   await File.update({ status }, { where: { id: { [Op.in]: fileIds } } });
+
+  logger.debug('File processing: status applied', {
+    event: 'file_processing_status_applied',
+    fileIds,
+    status,
+  });
+
   return status;
 };
 
@@ -91,6 +149,13 @@ const sendFileArrivedEmails = async (fileIds) => {
     try {
       const senderFirstName = record.sender?.firstName || '—';
       const shareLink = record.shareLinks?.[0] || null;
+
+      logger.debug('File processing: sending recipient notification email', {
+        event: 'file_processing_email_started',
+        fileId: record.id,
+        receiverEmail: record.receiverEmail,
+        emailType: shareLink ? 'share_link' : 'file_received',
+      });
 
       if (shareLink) {
         await sendShareLinkEmail({
@@ -114,6 +179,12 @@ const sendFileArrivedEmails = async (fileIds) => {
           comment:         record.comment || null,
         });
       }
+
+      logger.debug('File processing: recipient notification email sent', {
+        event: 'file_processing_email_finished',
+        fileId: record.id,
+        receiverEmail: record.receiverEmail,
+      });
     } catch (mailError) {
       logger.error('Recipient notification email failed', {
         event: 'file_recipient_email_failed',
@@ -136,28 +207,46 @@ const sendFileArrivedEmails = async (fileIds) => {
 const processScanJob = async (job) => {
   const { sharedFileId, quarantinePath, iv, fileIds } = job;
   const encryptedDestPath = path.join(ENCRYPTED_DIR, sharedFileId);
+  const context = { sharedFileId, fileIds };
+  const jobStartedAt = Date.now();
+
+  logger.info('Scan job started', {
+    event: 'scan_job_started',
+    quarantinePath,
+    ...context,
+  });
 
   const { scanResult, encrypted } = await scanAndEncrypt({
     quarantinePath,
     encryptedDestPath,
     ivHex: iv,
+    context,
   });
 
   if (!encrypted && scanResult.status === 'error') {
+    logger.error('Scan job aborted — antivirus unavailable, will retry', {
+      event: 'scan_job_aborted',
+      error: scanResult.error,
+      ...context,
+    });
     throw new Error(`Analyse antivirus indisponible : ${scanResult.error}`);
   }
 
   await applyScanOutcomeToFiles({ fileIds, encrypted, scanResult });
 
   if (encrypted) {
+    logger.debug('Scan job: dispatching recipient notification emails', {
+      event: 'scan_job_emails_started',
+      ...context,
+    });
     await sendFileArrivedEmails(fileIds);
   }
 
   logger.info('Scan job processed', {
     event: 'scan_job_processed',
-    sharedFileId,
-    fileIds,
     status: encrypted ? 'clean' : scanResult.status,
+    durationMs: Date.now() - jobStartedAt,
+    ...context,
   });
 };
 

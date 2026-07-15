@@ -13,6 +13,9 @@ assets/quarantine/
 logs/
 *.log
 
+# Documents d'exploitation locaux — jamais à commiter
+DEPLOIEMENT_PRODUCTION.md
+
 # OS
 .DS_Store
 Thumbs.db
