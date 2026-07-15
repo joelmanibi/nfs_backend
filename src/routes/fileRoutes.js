@@ -2,6 +2,7 @@
 
 const { Router } = require('express');
 const upload     = require('../../helpers/uploadMiddleware');
+const { trackUploadProgress } = upload;
 const { verifyToken } = require('../middleware/authMiddleware');
 const {
   uploadFile,
@@ -21,7 +22,7 @@ router.use(verifyToken);
 
 // ─── Upload ───────────────────────────────────────────────────────────────────
 // POST /api/files/upload
-router.post('/upload', upload.single('file'), uploadFile);
+router.post('/upload', trackUploadProgress, upload.single('file'), uploadFile);
 
 // ─── Download ─────────────────────────────────────────────────────────────────
 // POST /api/files/:id/download

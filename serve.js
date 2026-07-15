@@ -33,6 +33,28 @@ function createApp() {
 
   require('./src/routes')(app);
 
+  // ── Gestionnaire d'erreurs global ─────────────────────────────────────────
+  // Filet de sécurité : sans lui, toute erreur passée à next(err) (ex: erreurs
+  // Multer sur l'upload — fichier trop volumineux, flux interrompu) répondait
+  // en silence, sans jamais passer par le logger applicatif.
+  app.use((err, req, res, next) => {
+    const isMulterError = err.name === 'MulterError';
+
+    logger.error('Unhandled request error', {
+      event: isMulterError ? 'file_upload_multer_error' : 'unhandled_request_error',
+      method: req.method,
+      path: req.originalUrl,
+      error: err.message,
+      code: err.code,
+      stack: err.stack,
+    });
+
+    if (res.headersSent) return next(err);
+
+    const statusCode = isMulterError ? 400 : (err.statusCode || 500);
+    res.status(statusCode).json({ message: isMulterError ? err.message : 'Erreur interne.' });
+  });
+
   return app;
 }
 
@@ -67,9 +89,19 @@ async function startServer() {
 
   return new Promise((resolve, reject) => {
     const server = app.listen(port, '0.0.0.0', () => {
+      // Le requestTimeout par défaut de Node (5 min) tue silencieusement toute
+      // requête dont le corps met plus longtemps à arriver — ce qui coupait
+      // sans aucune trace de log les uploads de gros fichiers sur connexion
+      // lente. Relevé pour laisser le temps à un upload volumineux (voir
+      // MAX_FILE_SIZE_MB) d'arriver en entier, configurable via .env.
+      server.requestTimeout = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS, 10) || 30 * 60 * 1000;
+      server.headersTimeout = parseInt(process.env.HTTP_HEADERS_TIMEOUT_MS, 10) || 120000;
+
       logger.info(`[startup] Serveur démarré sur le port ${port}`, {
         event: 'server_started',
         port,
+        requestTimeoutMs: server.requestTimeout,
+        headersTimeoutMs: server.headersTimeout,
       });
 
       // ── Purge automatique — tous les jours à 02h00 ────────────────────────
