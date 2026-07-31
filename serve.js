@@ -6,8 +6,7 @@ const { runMigrations }     = require('./helpers/runMigrations');
 const { startCollectionScheduler } = require('./helpers/collectionScheduler');
 const { runStartupChecks }  = require('./helpers/startupChecks');
 const { runPurge }          = require('./helpers/purge');
-const { getQueueConfig, ensureConsumerGroup, startScanWorker } = require('./helpers/scanQueue');
-const { processScanJob }    = require('./helpers/uploadProcessing');
+const { getQueueConfig, ensureConsumerGroup } = require('./helpers/scanQueue');
 const { runQuarantineCleanup } = require('./helpers/quarantineCleanup');
 const logger                = require('./config/logger');
 
@@ -66,19 +65,22 @@ async function startServer() {
   // Tests LDAPS + SMTP exécutés en parallèle — jamais bloquants
   await runStartupChecks();
 
-  // ── Worker de scan antivirus (queue Redis) — désactivé en dev par défaut ──
-  // Non bloquant : si Redis est injoignable, le serveur démarre quand même
-  // (cohérent avec les checks LDAP/SMTP ci-dessus) ; les uploads échoueront
+  // ── Queue de scan antivirus (Redis Streams) ───────────────────────────────
+  // Le worker qui consomme cette queue tourne dans un processus séparé (voir
+  // worker.js), jamais ici — le chiffrement d'un gros fichier ne doit plus
+  // jamais partager la boucle d'événements avec l'API HTTP. On se contente ici
+  // de garantir que le groupe de consommateurs existe avant que des jobs ne
+  // soient empilés (XADD crée le stream tout seul, mais pas le groupe) ; appel
+  // idempotent, sans effet si worker.js l'a déjà fait. Non bloquant : si Redis
+  // est injoignable, le serveur démarre quand même — les uploads échoueront
   // proprement (503) tant que Redis n'est pas revenu.
   const queueConfig = getQueueConfig();
   if (queueConfig.enabled) {
     try {
       await ensureConsumerGroup();
-      startScanWorker(processScanJob);
-      logger.info('[startup] Worker de scan antivirus démarré', { event: 'scan_worker_started' });
     } catch (error) {
-      logger.error('[startup] Échec de démarrage du worker de scan antivirus', {
-        event: 'scan_worker_startup_failed',
+      logger.error('[startup] Échec de préparation de la queue de scan antivirus', {
+        event: 'scan_queue_setup_failed',
         error: error.message,
       });
     }

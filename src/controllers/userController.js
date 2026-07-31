@@ -61,14 +61,18 @@ const searchUsers = async (req, res) => {
 
   // ── 2. Active Directory (LDAP) ───────────────────────────────────────────────
   if (results.size < MAX_RESULTS) {
-    const client = new Client({
-      url:            LDAP_URL,
-      tlsOptions:     { rejectUnauthorized: false },
-      timeout:        5000,
-      connectTimeout: 5000,
-    });
+    let client;
 
     try {
+      // new Client() lève une exception synchrone si LDAP_URL est mal formée —
+      // doit rester dans ce try pour ne pas planter le process (voir ldapController.js).
+      client = new Client({
+        url:            LDAP_URL,
+        tlsOptions:     { rejectUnauthorized: false },
+        timeout:        5000,
+        connectTimeout: 5000,
+      });
+
       await client.bind(LDAP_BIND_DN, LDAP_BIND_PASSWORD);
 
       const safe   = escapeLdap(q);
@@ -105,7 +109,7 @@ const searchUsers = async (req, res) => {
       // LDAP indisponible → dégradation gracieuse, résultats DB déjà présents
       logger.warn('userSearch LDAP error', { error: ldapErr.message });
     } finally {
-      await client.unbind().catch(() => {});
+      if (client) await client.unbind().catch(() => {});
     }
   }
 

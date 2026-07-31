@@ -27,14 +27,18 @@ const loginWithLDAP = async (req, res) => {
     return res.status(400).json({ message: 'Identifiant et mot de passe requis.' });
   }
 
-  const client = new Client({
-    url: LDAP_URL,
-    tlsOptions: { rejectUnauthorized: false },
-    timeout: 8000,
-    connectTimeout: 8000,
-  });
+  let client;
 
   try {
+    // new Client() lève une exception synchrone si LDAP_URL est mal formée —
+    // doit rester dans ce try pour ne pas planter le process entier.
+    client = new Client({
+      url: LDAP_URL,
+      tlsOptions: { rejectUnauthorized: false },
+      timeout: 8000,
+      connectTimeout: 8000,
+    });
+
     // ── 1. Bind de service (pour pouvoir faire la recherche) ──────────────────
     await client.bind(LDAP_BIND_DN, LDAP_BIND_PASSWORD);
 
@@ -146,7 +150,7 @@ const loginWithLDAP = async (req, res) => {
     return res.status(500).json({ message: 'Erreur de connexion à l\'annuaire PAA.', error: err.message });
 
   } finally {
-    await client.unbind().catch(() => {});
+    if (client) await client.unbind().catch(() => {});
   }
 };
 
