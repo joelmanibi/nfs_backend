@@ -98,6 +98,7 @@ const sendDownloadCodeEmails = async (createdRecords, normalizedDownloadCode, se
 
 // ─── Upload ───────────────────────────────────────────────────────────────────
 const uploadFile = async (req, res) => {
+  const requestStartedAt = Date.now();
   let quarantinePath    = null;
   let encryptedDestPath = null;
   let anyPersisted      = false;
@@ -215,7 +216,7 @@ const uploadFile = async (req, res) => {
     if (!queueConfig.enabled) {
       logger.info('Antivirus scan started', { event: 'antivirus_scan_started', ...uploadMeta });
 
-      const { scanResult, encrypted } = await scanAndEncrypt({
+      const { scanResult, encrypted, scanDurationMs, encryptDurationMs } = await scanAndEncrypt({
         quarantinePath,
         encryptedDestPath,
         ivHex: iv,
@@ -229,6 +230,8 @@ const uploadFile = async (req, res) => {
         antivirusPort: scanResult.config.port,
         antivirusFailOnError: scanResult.config.failOnError,
         antivirusEnabled: scanResult.config.enabled,
+        scanDurationMs,
+        encryptDurationMs,
       };
 
       if (scanResult.status === 'infected') {
@@ -264,6 +267,7 @@ const uploadFile = async (req, res) => {
         logger.warn('Antivirus scan skipped', { ...scanMeta, reason: scanResult.reason });
       }
 
+      const dbStartedAt = Date.now();
       const createdRecords = [];
       const t = await sequelize.transaction();
       try {
@@ -299,6 +303,7 @@ const uploadFile = async (req, res) => {
         await t.rollback();
         throw dbErr;
       }
+      const dbDurationMs = Date.now() - dbStartedAt;
 
       logger.info('File(s) uploaded', {
         event:      'file_upload_succeeded',
@@ -309,12 +314,29 @@ const uploadFile = async (req, res) => {
         size:       req.file.size,
         isProtected: protected_,
         viaLink,
+        dbDurationMs,
       });
 
       // ── Envoi des emails (hors transaction — l'upload est considéré réussi) ──
+      const emailsStartedAt = Date.now();
       const senderFirstName = await resolveSenderFirstName(req.user.id, req.user.firstName || '—');
       await sendDownloadCodeEmails(createdRecords, normalizedDownloadCode, senderFirstName);
       await sendFileArrivedEmails(createdRecords.map(({ record }) => record.id));
+      const emailsDurationMs = Date.now() - emailsStartedAt;
+
+      // Récapitulatif complet de la requête — permet de voir en un seul log
+      // où part le temps (transmission déjà couverte par
+      // upload_request_progress/_body_received) sans recorréler plusieurs
+      // lignes par timestamp.
+      logger.info('Upload request completed', {
+        event: 'file_upload_request_completed',
+        sharedFileId,
+        scanDurationMs,
+        encryptDurationMs,
+        dbDurationMs,
+        emailsDurationMs,
+        totalDurationMs: Date.now() - requestStartedAt,
+      });
 
       return res.status(201).json({
         message: `Fichier envoyé à ${createdRecords.length} destinataire(s).`,
@@ -337,6 +359,7 @@ const uploadFile = async (req, res) => {
     // répond immédiatement — le scan + chiffrement est traité par le worker
     // (helpers/scanQueue.js → helpers/uploadProcessing.js#processScanJob).
     // ═══════════════════════════════════════════════════════════════════════
+    const dbStartedAt = Date.now();
     const createdRecords = [];
     const t = await sequelize.transaction();
     try {
@@ -372,6 +395,7 @@ const uploadFile = async (req, res) => {
       await t.rollback();
       throw dbErr;
     }
+    const dbDurationMs = Date.now() - dbStartedAt;
 
     logger.info('File(s) uploaded — queued for antivirus scan', {
       event:      'file_upload_queued',
@@ -382,12 +406,16 @@ const uploadFile = async (req, res) => {
       size:       req.file.size,
       isProtected: protected_,
       viaLink,
+      dbDurationMs,
     });
 
+    const downloadCodeEmailStartedAt = Date.now();
     const senderFirstName = await resolveSenderFirstName(req.user.id, req.user.firstName || '—');
     await sendDownloadCodeEmails(createdRecords, normalizedDownloadCode, senderFirstName);
+    const downloadCodeEmailDurationMs = Date.now() - downloadCodeEmailStartedAt;
 
     const fileIds = createdRecords.map(({ record }) => record.id);
+    const enqueueStartedAt = Date.now();
     try {
       await enqueueScanJob({ sharedFileId, quarantinePath, iv, fileIds });
     } catch (queueErr) {
@@ -395,6 +423,7 @@ const uploadFile = async (req, res) => {
         event: 'scan_job_enqueue_failed',
         sharedFileId,
         error: queueErr.message,
+        enqueueDurationMs: Date.now() - enqueueStartedAt,
       });
       // Les ShareLink liés sont supprimés en cascade (FK onDelete CASCADE).
       await File.destroy({ where: { id: { [Op.in]: fileIds } } });
@@ -403,6 +432,18 @@ const uploadFile = async (req, res) => {
         message: 'Le service de mise en file d’attente est indisponible. Réessayez plus tard.',
       });
     }
+    const enqueueDurationMs = Date.now() - enqueueStartedAt;
+
+    // Récapitulatif complet de la requête (le scan/chiffrement réel est
+    // effectué par worker.js — voir son propre log "Scan job processed").
+    logger.info('Upload request completed', {
+      event: 'file_upload_request_completed',
+      sharedFileId,
+      dbDurationMs,
+      downloadCodeEmailDurationMs,
+      enqueueDurationMs,
+      totalDurationMs: Date.now() - requestStartedAt,
+    });
 
     return res.status(202).json({
       message: `Fichier reçu pour ${createdRecords.length} destinataire(s), analyse antivirus en cours.`,
@@ -440,6 +481,7 @@ const uploadFile = async (req, res) => {
         event: 'file_upload_rejected',
         statusCode,
         error: err.message,
+        durationMs: Date.now() - requestStartedAt,
         ...buildAuditMeta(req, {
           originalName: req.file?.originalname
             ? Buffer.from(req.file.originalname, 'latin1').toString('utf8')
@@ -452,6 +494,7 @@ const uploadFile = async (req, res) => {
     logger.error('Upload error', {
       event: 'file_upload_failed',
       error: err.message,
+      durationMs: Date.now() - requestStartedAt,
       ...buildAuditMeta(req, {
         originalName: req.file?.originalname
           ? Buffer.from(req.file.originalname, 'latin1').toString('utf8')

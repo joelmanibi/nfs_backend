@@ -71,7 +71,7 @@ const scanAndEncrypt = async ({ quarantinePath, encryptedDestPath, ivHex, contex
       ...context,
     });
     safeUnlink(quarantinePath, { reason: 'infected', ...context });
-    return { scanResult, encrypted: false };
+    return { scanResult, encrypted: false, scanDurationMs, encryptDurationMs: 0 };
   }
 
   if (scanResult.status === 'error' && scanResult.config.failOnError) {
@@ -80,7 +80,7 @@ const scanAndEncrypt = async ({ quarantinePath, encryptedDestPath, ivHex, contex
       error: scanResult.error,
       ...context,
     });
-    return { scanResult, encrypted: false };
+    return { scanResult, encrypted: false, scanDurationMs, encryptDurationMs: 0 };
   }
 
   logger.debug('File processing: encryption step started', {
@@ -101,14 +101,15 @@ const scanAndEncrypt = async ({ quarantinePath, encryptedDestPath, ivHex, contex
     throw encryptError;
   }
 
+  const encryptDurationMs = Date.now() - encryptStartedAt;
   logger.debug('File processing: encryption step finished', {
     event: 'file_processing_encryption_finished',
-    encryptDurationMs: Date.now() - encryptStartedAt,
+    encryptDurationMs,
     ...context,
   });
 
   safeUnlink(quarantinePath, { reason: 'encrypted', ...context });
-  return { scanResult, encrypted: true };
+  return { scanResult, encrypted: true, scanDurationMs, encryptDurationMs };
 };
 
 /**
@@ -120,12 +121,15 @@ const applyScanOutcomeToFiles = async ({ fileIds, encrypted, scanResult }) => {
     ? 'clean'
     : (scanResult.status === 'infected' ? 'infected' : 'scan_failed');
 
+  const startedAt = Date.now();
   await File.update({ status }, { where: { id: { [Op.in]: fileIds } } });
+  const dbUpdateDurationMs = Date.now() - startedAt;
 
   logger.debug('File processing: status applied', {
     event: 'file_processing_status_applied',
     fileIds,
     status,
+    dbUpdateDurationMs,
   });
 
   return status;
@@ -216,7 +220,7 @@ const processScanJob = async (job) => {
     ...context,
   });
 
-  const { scanResult, encrypted } = await scanAndEncrypt({
+  const { scanResult, encrypted, scanDurationMs, encryptDurationMs } = await scanAndEncrypt({
     quarantinePath,
     encryptedDestPath,
     ivHex: iv,
@@ -232,19 +236,31 @@ const processScanJob = async (job) => {
     throw new Error(`Analyse antivirus indisponible : ${scanResult.error}`);
   }
 
+  const dbStartedAt = Date.now();
   await applyScanOutcomeToFiles({ fileIds, encrypted, scanResult });
+  const dbDurationMs = Date.now() - dbStartedAt;
 
+  let emailsDurationMs = 0;
   if (encrypted) {
     logger.debug('Scan job: dispatching recipient notification emails', {
       event: 'scan_job_emails_started',
       ...context,
     });
+    const emailsStartedAt = Date.now();
     await sendFileArrivedEmails(fileIds);
+    emailsDurationMs = Date.now() - emailsStartedAt;
   }
 
+  // Récapitulatif complet — permet de voir en un seul log où part le temps
+  // (transmission déjà couverte par upload_request_progress/_body_received)
+  // sans avoir à recorréler plusieurs lignes par timestamp.
   logger.info('Scan job processed', {
     event: 'scan_job_processed',
     status: encrypted ? 'clean' : scanResult.status,
+    scanDurationMs,
+    encryptDurationMs,
+    dbDurationMs,
+    emailsDurationMs,
     durationMs: Date.now() - jobStartedAt,
     ...context,
   });

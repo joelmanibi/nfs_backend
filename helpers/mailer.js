@@ -103,6 +103,7 @@ const sendMail = async (message, logContext = {}) => {
     ...logMeta,
   });
 
+  const startedAt = Date.now();
   try {
     const info = await createTransporter().sendMail({
       from: `"${APP_NAME}" <${getSenderAddress()}>`,
@@ -115,6 +116,7 @@ const sendMail = async (message, logContext = {}) => {
       messageId: info.messageId,
       acceptedCount: info.accepted?.length || 0,
       rejectedCount: info.rejected?.length || 0,
+      durationMs: Date.now() - startedAt,
     });
 
     return info;
@@ -123,6 +125,7 @@ const sendMail = async (message, logContext = {}) => {
       event: 'email_send_failed',
       ...logMeta,
       error: error.message,
+      durationMs: Date.now() - startedAt,
     });
 
     throw error;
