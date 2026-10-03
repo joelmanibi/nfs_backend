@@ -5,6 +5,7 @@ const path = require('path');
 const { Op } = require('sequelize');
 const { File, ShareLink } = require('../src/models');
 const logger = require('../config/logger');
+const { errorDetails } = require('./errorDetails');
 
 const ENCRYPTED_DIR  = path.resolve('assets', 'encrypted');
 const PURGE_DAYS     = parseInt(process.env.PURGE_RETENTION_DAYS, 10) || 15;
@@ -85,7 +86,7 @@ const runPurge = async () => {
           logger.error('Échec suppression fichier physique', {
             event: 'purge_file_error',
             encryptedPath,
-            error: fsErr.message,
+            ...errorDetails(fsErr),
           });
         }
       }
@@ -113,7 +114,7 @@ const runPurge = async () => {
     errors++;
     logger.error('Erreur critique lors de la purge', {
       event: 'purge_critical_error',
-      error: err.message,
+      ...errorDetails(err),
     });
   }
 

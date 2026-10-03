@@ -4,6 +4,7 @@ const { Op }     = require('sequelize');
 const { Client } = require('ldapts');
 const { User }   = require('../models');
 const logger     = require('../../config/logger');
+const { errorDetails } = require('../../helpers/errorDetails');
 
 // ─── LDAP config ──────────────────────────────────────────────────────────────
 const LDAP_URL           = process.env.LDAP_URL           || 'ldaps://10.32.15.110:636';
@@ -56,7 +57,7 @@ const searchUsers = async (req, res) => {
       });
     }
   } catch (dbErr) {
-    logger.warn('userSearch DB error', { error: dbErr.message });
+    logger.warn('userSearch DB error', { ...errorDetails(dbErr) });
   }
 
   // ── 2. Active Directory (LDAP) ───────────────────────────────────────────────
@@ -107,7 +108,7 @@ const searchUsers = async (req, res) => {
       }
     } catch (ldapErr) {
       // LDAP indisponible → dégradation gracieuse, résultats DB déjà présents
-      logger.warn('userSearch LDAP error', { error: ldapErr.message });
+      logger.warn('userSearch LDAP error', { ...errorDetails(ldapErr) });
     } finally {
       if (client) await client.unbind().catch(() => {});
     }

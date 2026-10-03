@@ -8,6 +8,7 @@ const { scanPath }              = require('./antivirus');
 const { encryptFileStream }     = require('./crypto');
 const { sendFileReceivedEmail, sendShareLinkEmail } = require('./mailer');
 const logger                    = require('../config/logger');
+const { errorDetails } = require('./errorDetails');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://securetransport.paa.ci';
 const ENCRYPTED_DIR = path.resolve('assets', 'encrypted');
@@ -25,7 +26,7 @@ const safeUnlink = (filePath, context = {}) => {
     logger.error('Quarantine cleanup failed', {
       event: 'quarantine_cleanup_failed',
       filePath,
-      error: error.message,
+      ...errorDetails(error),
       ...context,
     });
   }
@@ -95,7 +96,7 @@ const scanAndEncrypt = async ({ quarantinePath, encryptedDestPath, ivHex, contex
   } catch (encryptError) {
     logger.error('File processing: encryption step failed', {
       event: 'file_processing_encryption_failed',
-      error: encryptError.message,
+      ...errorDetails(encryptError),
       ...context,
     });
     throw encryptError;
@@ -145,7 +146,7 @@ const sendFileArrivedEmails = async (fileIds) => {
     where: { id: { [Op.in]: fileIds } },
     include: [
       { model: ShareLink, as: 'shareLinks' },
-      { model: User, as: 'sender', attributes: ['firstName'] },
+      { model: User, as: 'sender', attributes: ['firstName'], paranoid: false },
     ],
   });
 
@@ -194,7 +195,7 @@ const sendFileArrivedEmails = async (fileIds) => {
         event: 'file_recipient_email_failed',
         fileId: record.id,
         receiverEmail: record.receiverEmail,
-        error: mailError.message,
+        ...errorDetails(mailError),
       });
     }
   }

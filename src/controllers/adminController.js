@@ -10,10 +10,27 @@ const logger     = require('../../config/logger');
 const { sendAccountApprovedEmail, sendAccountRejectedEmail, sendAccountCreatedEmail, sendAccountUnblockedEmail } = require('../../helpers/mailer');
 const { generateTempPassword } = require('../../helpers/password');
 const { normalizeEmail } = require('../../helpers/audit');
+const { errorDetails } = require('../../helpers/errorDetails');
 
 const BCRYPT_ROUNDS = 12;
 
 const LOG_FILE = path.resolve('logs', 'combined.log');
+
+// ─── Hiérarchie de gestion des comptes ───────────────────────────────────────
+// Chaque rôle admin ne gère (création, modification, blocage, suppression,
+// restauration) qu'un seul rôle : SUPER_ADMIN → ADMIN, ADMIN → USER.
+// Seule exception : le SUPER_ADMIN peut basculer un compte ADMIN ↔ USER (updateUser).
+const MANAGEABLE_ROLE = { SUPER_ADMIN: 'ADMIN', ADMIN: 'USER' };
+const MANAGEABLE_ROLE_LABEL = { ADMIN: 'Administrateur', USER: 'Utilisateur' };
+
+const canManage = (actor, target) => MANAGEABLE_ROLE[actor.role] === target.role;
+
+const forbiddenRoleMessage = (actor) => {
+  const label = MANAGEABLE_ROLE_LABEL[MANAGEABLE_ROLE[actor.role]];
+  return label
+    ? `Vous ne pouvez gérer que les comptes ${label}.`
+    : 'Action non autorisée.';
+};
 
 // ─── Stats globales ──────────────────────────────────────────────────────────
 const getStats = async (req, res) => {
@@ -30,7 +47,7 @@ const getStats = async (req, res) => {
 
     return res.json({ totalUsers, totalFiles, activeLinks, totalSize, internalUsers, externalUsers });
   } catch (err) {
-    logger.error('Admin stats error', { error: err.message });
+    logger.error('Admin stats error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -116,7 +133,7 @@ const getStatsTimeseries = async (req, res) => {
 
     return res.json({ startDate: startDate.toISOString(), endDate: endDate.toISOString(), series });
   } catch (err) {
-    logger.error('Admin stats timeseries error', { error: err.message });
+    logger.error('Admin stats timeseries error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -155,7 +172,7 @@ const getStatsExtensions = async (req, res) => {
 
     return res.json({ startDate: startDate.toISOString(), endDate: endDate.toISOString(), total: rows.length, extensions });
   } catch (err) {
-    logger.error('Admin stats extensions error', { error: err.message });
+    logger.error('Admin stats extensions error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -177,6 +194,7 @@ const getTopSenders = async (req, res) => {
     const senders = await User.findAll({
       where: { id: { [Op.in]: senderIds } },
       attributes: ['id', 'firstName', 'lastName'],
+      paranoid: false,
     });
     const senderMap = new Map(senders.map((u) => [u.id, u]));
 
@@ -191,7 +209,7 @@ const getTopSenders = async (req, res) => {
 
     return res.json({ topSenders });
   } catch (err) {
-    logger.error('Admin top senders error', { error: err.message });
+    logger.error('Admin top senders error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -223,15 +241,19 @@ const createUser = async (req, res) => {
       return res.status(400).json({ message: `Champs obligatoires manquants : ${missing.join(', ')}.` });
     }
 
-    // Seul un SUPER_ADMIN peut créer un compte SUPER_ADMIN (même règle que updateUser)
-    if (role === 'SUPER_ADMIN' && req.user.role !== 'SUPER_ADMIN') {
-      return res.status(403).json({ message: 'Seul un Super Administrateur peut attribuer ce rôle.' });
+    // Le rôle créé est imposé par la hiérarchie (SUPER_ADMIN → ADMIN, ADMIN → USER)
+    const createdRole = MANAGEABLE_ROLE[req.user.role];
+    if (!createdRole) {
+      return res.status(403).json({ message: 'Action non autorisée.' });
     }
-    if (role !== undefined && !['SUPER_ADMIN', 'ADMIN', 'USER'].includes(role)) {
-      return res.status(400).json({ message: 'Rôle invalide. Valeurs: SUPER_ADMIN, ADMIN, USER.' });
+    if (role !== undefined && role !== createdRole) {
+      return res.status(403).json({ message: `Vous ne pouvez créer que des comptes ${MANAGEABLE_ROLE_LABEL[createdRole]}.` });
     }
 
-    const exists = await User.findOne({ where: { email: normalizedEmail } });
+    const exists = await User.findOne({ where: { email: normalizedEmail }, paranoid: false });
+    if (exists?.deletedAt) {
+      return res.status(409).json({ message: 'Cet email appartient à un compte supprimé. Restaurez-le depuis l\'onglet « Comptes supprimés ».' });
+    }
     if (exists) {
       return res.status(409).json({ message: 'Cet email est déjà enregistré.' });
     }
@@ -247,7 +269,7 @@ const createUser = async (req, res) => {
       city:           city?.trim() || null,
       organisation:   organisation.trim(),
       country:        country.trim(),
-      role:           role || 'USER',
+      role:           createdRole,
       isInternalUser: Boolean(isInternalUser),
       isApproved:     true,
       mustChangePassword: true,
@@ -274,7 +296,7 @@ const createUser = async (req, res) => {
       logger.error('Account created email failed', {
         event: 'admin_user_created_email_failed',
         targetId: user.id,
-        error: mailErr.message,
+        ...errorDetails(mailErr),
       });
     }
 
@@ -290,7 +312,7 @@ const createUser = async (req, res) => {
       },
     });
   } catch (err) {
-    logger.error('Admin createUser error', { error: err.message });
+    logger.error('Admin createUser error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };
@@ -302,8 +324,13 @@ const getUsers = async (req, res) => {
     const search     = req.query.search?.trim() || '';
     const isInternal = req.query.isInternal; // 'true' | 'false' | undefined
     const role       = req.query.role?.trim(); // 'USER' | 'ADMIN' | 'SUPER_ADMIN' | undefined
+    const deleted    = req.query.deleted === 'true'; // true → uniquement les comptes supprimés
+    const blocked    = req.query.blocked; // 'true' (bloqués / inactifs) | 'false' (actifs) | undefined
 
     const where = {};
+    if (deleted) where.deletedAt = { [Op.ne]: null };
+    if (blocked === 'true')  where.isBlocked = true;
+    if (blocked === 'false') where.isBlocked = false;
 
     if (search) {
       where[Op.or] = [
@@ -322,21 +349,31 @@ const getUsers = async (req, res) => {
 
     const { count, rows } = await User.findAndCountAll({
       where,
-      attributes: ['id', 'firstName', 'lastName', 'email', 'role', 'city', 'phone', 'organisation', 'isInternalUser', 'createdAt'],
-      order: [['createdAt', 'DESC']],
+      attributes: ['id', 'firstName', 'lastName', 'email', 'role', 'city', 'phone', 'organisation', 'isInternalUser', 'isBlocked', 'createdAt', 'deletedAt', 'deletedById'],
+      order: deleted ? [['deletedAt', 'DESC']] : [['createdAt', 'DESC']],
       limit,
       offset: (page - 1) * limit,
+      paranoid: !deleted,
     });
+
+    // Auteur de la suppression (lui-même éventuellement supprimé depuis)
+    const deleterIds = [...new Set(rows.map((u) => u.deletedById).filter(Boolean))];
+    const deleters = deleterIds.length
+      ? await User.findAll({ where: { id: { [Op.in]: deleterIds } }, attributes: ['id', 'firstName', 'lastName'], paranoid: false })
+      : [];
+    const deleterMap = new Map(deleters.map((d) => [d.id, `${d.firstName} ${d.lastName}`]));
 
     const users = rows.map((u) => {
       const obj = u.toJSON();
       obj.isInternalUser = Boolean(obj.isInternalUser);
+      obj.isBlocked = Boolean(obj.isBlocked);
+      if (obj.deletedById) obj.deletedByName = deleterMap.get(obj.deletedById) || null;
       return obj;
     });
 
     return res.json({ count, page, pages: Math.ceil(count / limit), users });
   } catch (err) {
-    logger.error('Admin getUsers error', { error: err.message });
+    logger.error('Admin getUsers error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -346,21 +383,26 @@ const updateUser = async (req, res) => {
     const { id } = req.params;
     const { role, isInternalUser } = req.body;
 
-    // Seul SUPER_ADMIN peut attribuer le rôle SUPER_ADMIN
-    if (role === 'SUPER_ADMIN' && req.user.role !== 'SUPER_ADMIN') {
-      return res.status(403).json({ message: 'Seul un Super Administrateur peut attribuer ce rôle.' });
-    }
-
-    // Valider les champs fournis
-    if (role !== undefined && !['SUPER_ADMIN', 'ADMIN', 'USER'].includes(role)) {
-      return res.status(400).json({ message: 'Rôle invalide. Valeurs: SUPER_ADMIN, ADMIN, USER.' });
-    }
-
     const user = await User.findByPk(id, { attributes: ['id', 'email', 'role', 'isInternalUser'] });
     if (!user) return res.status(404).json({ message: 'Utilisateur introuvable.' });
 
-    if (role !== undefined && user.id === req.user.id) {
-      return res.status(400).json({ message: 'Vous ne pouvez pas modifier votre propre rôle.' });
+    if (user.id === req.user.id) {
+      return res.status(400).json({ message: 'Vous ne pouvez pas modifier votre propre compte.' });
+    }
+
+    // Changement de rôle : SUPER_ADMIN uniquement, et seulement ADMIN ↔ USER
+    if (role !== undefined) {
+      if (req.user.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ message: 'Seul un Super Administrateur peut modifier un rôle.' });
+      }
+      if (!['ADMIN', 'USER'].includes(role) || !['ADMIN', 'USER'].includes(user.role)) {
+        return res.status(403).json({ message: 'Seule la bascule Administrateur ↔ Utilisateur est autorisée.' });
+      }
+    }
+
+    // Autres modifications : uniquement sur le rôle géré par l'acteur
+    if (isInternalUser !== undefined && !canManage(req.user, user)) {
+      return res.status(403).json({ message: forbiddenRoleMessage(req.user) });
     }
 
     const changes = {};
@@ -371,7 +413,7 @@ const updateUser = async (req, res) => {
     logger.info('Admin updated user', { adminId: req.user.id, targetId: id, changes });
     return res.json({ message: 'Utilisateur mis à jour.', user: { id: user.id, email: user.email, ...changes } });
   } catch (err) {
-    logger.error('Admin updateUser error', { error: err.message });
+    logger.error('Admin updateUser error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -394,9 +436,8 @@ const blockUser = async (req, res) => {
     const user = await User.findByPk(id, { attributes: ['id', 'email', 'firstName', 'role', 'isBlocked'] });
     if (!user) return res.status(404).json({ message: 'Utilisateur introuvable.' });
 
-    // Seul un SUPER_ADMIN peut bloquer/débloquer un autre SUPER_ADMIN
-    if (user.role === 'SUPER_ADMIN' && req.user.role !== 'SUPER_ADMIN') {
-      return res.status(403).json({ message: 'Seul un Super Administrateur peut bloquer un autre Super Administrateur.' });
+    if (!canManage(req.user, user)) {
+      return res.status(403).json({ message: forbiddenRoleMessage(req.user) });
     }
 
     user.isBlocked = !user.isBlocked;
@@ -414,17 +455,25 @@ const blockUser = async (req, res) => {
       try {
         await sendAccountUnblockedEmail({ firstName: user.firstName, email: user.email });
       } catch (mailErr) {
-        logger.warn('Account unblocked email failed', { error: mailErr.message });
+        logger.warn('Account unblocked email failed', { ...errorDetails(mailErr) });
       }
     }
 
     return res.json({ isBlocked: user.isBlocked });
   } catch (err) {
-    logger.error('Admin blockUser error', { error: err.message });
+    logger.error('Admin blockUser error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
 
+// ─── Supprimer / restaurer un compte ──────────────────────────────────────
+/**
+ * DELETE /admin/users/:id — ouvert à ADMIN et SUPER_ADMIN.
+ * Suppression logique (modèle paranoid) : la ligne est conservée avec
+ * deletedAt (date de suppression) et deletedById (auteur), le compte
+ * disparaît des listes et ne peut plus se connecter. Ses fichiers et
+ * l'historique restent intacts. Réversible via PATCH /admin/users/:id/restore.
+ */
 const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -436,11 +485,62 @@ const deleteUser = async (req, res) => {
     const user = await User.findByPk(id);
     if (!user) return res.status(404).json({ message: 'Utilisateur introuvable.' });
 
-    await user.destroy();
-    logger.info('Admin deleted user', { adminId: req.user.id, targetId: id, targetEmail: user.email });
-    return res.json({ message: 'Utilisateur supprimé.' });
+    if (!canManage(req.user, user)) {
+      return res.status(403).json({ message: forbiddenRoleMessage(req.user) });
+    }
+
+    await sequelize.transaction(async (transaction) => {
+      await user.update({ deletedById: req.user.id }, { transaction });
+      await user.destroy({ transaction });
+    });
+
+    logger.info('Admin deleted user', {
+      event: 'admin_user_deleted',
+      adminId: req.user.id,
+      targetId: id,
+      targetEmail: user.email,
+      deletedAt: user.deletedAt,
+    });
+    return res.json({ message: 'Utilisateur supprimé.', deletedAt: user.deletedAt });
   } catch (err) {
-    logger.error('Admin deleteUser error', { error: err.message });
+    logger.error('Admin deleteUser error', { ...errorDetails(err) });
+    return res.status(500).json({ message: 'Erreur interne.' });
+  }
+};
+
+/**
+ * PATCH /admin/users/:id/restore — ouvert à ADMIN et SUPER_ADMIN.
+ * Réactive un compte supprimé logiquement. L'état isBlocked est conservé
+ * tel qu'il était au moment de la suppression.
+ */
+const restoreUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = await User.findByPk(id, { paranoid: false });
+    if (!user) return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    if (!user.deletedAt) return res.status(400).json({ message: 'Ce compte n\'est pas supprimé.' });
+
+    if (!canManage(req.user, user)) {
+      return res.status(403).json({ message: forbiddenRoleMessage(req.user) });
+    }
+
+    const deletedAt = user.deletedAt;
+    await sequelize.transaction(async (transaction) => {
+      await user.restore({ transaction });
+      await user.update({ deletedById: null }, { transaction });
+    });
+
+    logger.info('Admin restored user', {
+      event: 'admin_user_restored',
+      adminId: req.user.id,
+      targetId: id,
+      targetEmail: user.email,
+      deletedAt,
+    });
+    return res.json({ message: 'Utilisateur restauré.' });
+  } catch (err) {
+    logger.error('Admin restoreUser error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -459,6 +559,7 @@ const getUserStats = async (req, res) => {
     const { id } = req.params;
     const user = await User.findByPk(id, {
       attributes: ['id', 'firstName', 'lastName', 'email', 'role', 'isInternalUser', 'organisation'],
+      paranoid: false,
     });
     if (!user) return res.status(404).json({ message: 'Utilisateur introuvable.' });
 
@@ -508,7 +609,7 @@ const getUserStats = async (req, res) => {
       extensions,
     });
   } catch (err) {
-    logger.error('Admin getUserStats error', { error: err.message });
+    logger.error('Admin getUserStats error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -529,7 +630,7 @@ const getTransfers = async (req, res) => {
     if (originalName)  where.originalName  = { [Op.like]: `%${originalName}%` };
     if (receiverEmail) where.receiverEmail = { [Op.like]: `%${receiverEmail}%` };
 
-    const senderInclude = { model: User, as: 'sender', attributes: ['id', 'email', 'firstName', 'lastName'] };
+    const senderInclude = { model: User, as: 'sender', attributes: ['id', 'email', 'firstName', 'lastName'], paranoid: false };
     if (senderEmail) senderInclude.where = { email: { [Op.like]: `%${senderEmail}%` } };
 
     const { count, rows } = await File.findAndCountAll({
@@ -553,7 +654,7 @@ const getTransfers = async (req, res) => {
 
     return res.json({ count, page, pages: Math.ceil(count / limit), transfers });
   } catch (err) {
-    logger.error('Admin getTransfers error', { error: err.message });
+    logger.error('Admin getTransfers error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -567,14 +668,14 @@ const getActiveTransfers = async (req, res) => {
         model: File,
         as: 'file',
         attributes: { exclude: ['encryptedPath', 'downloadCodeHash', 'iv'] },
-        include: [{ model: User, as: 'sender', attributes: ['id', 'email', 'firstName', 'lastName'] }],
+        include: [{ model: User, as: 'sender', attributes: ['id', 'email', 'firstName', 'lastName'], paranoid: false }],
       }],
       order: [['createdAt', 'DESC']],
     });
 
     return res.json({ count: links.length, activeLinks: links });
   } catch (err) {
-    logger.error('Admin getActiveTransfers error', { error: err.message });
+    logger.error('Admin getActiveTransfers error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -663,7 +764,40 @@ const getAuditLogs = async (req, res) => {
 
     return res.json({ count: sanitized.length, logs: sanitized, restricted: req.user.role !== 'SUPER_ADMIN' });
   } catch (err) {
-    logger.error('Admin getAuditLogs error', { error: err.message });
+    logger.error('Admin getAuditLogs error', { ...errorDetails(err) });
+    return res.status(500).json({ message: 'Erreur interne.' });
+  }
+};
+
+// ─── Bloquer / débloquer un transfert ────────────────────────────────────────
+/**
+ * PATCH /admin/transfers/:id/block — ouvert à ADMIN et SUPER_ADMIN.
+ * Bascule le blocage administrateur : le fichier reste visible mais ne peut
+ * plus être téléchargé (destinataire comme lien de partage), et l'expéditeur
+ * ne peut ni lever ce blocage ni créer de nouveau lien.
+ */
+const blockTransfer = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const file = await File.findByPk(id, { attributes: ['id', 'originalName', 'reference', 'adminBlockedAt', 'adminBlockedById'] });
+    if (!file) return res.status(404).json({ message: 'Transfert introuvable.' });
+
+    const blocking = !file.adminBlockedAt;
+    await file.update({
+      adminBlockedAt:   blocking ? new Date() : null,
+      adminBlockedById: blocking ? req.user.id : null,
+    });
+
+    logger.info(blocking ? 'Admin blocked transfer' : 'Admin unblocked transfer', {
+      event: blocking ? 'admin_file_blocked' : 'admin_file_unblocked',
+      adminId: req.user.id,
+      fileId: id,
+      reference: file.reference,
+    });
+
+    return res.json({ adminBlockedAt: file.adminBlockedAt });
+  } catch (err) {
+    logger.error('Admin blockTransfer error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -678,7 +812,7 @@ const deleteTransfer = async (req, res) => {
     logger.info('Admin deleted transfer', { adminId: req.user.id, fileId: id });
     return res.json({ message: 'Transfert supprimé.' });
   } catch (err) {
-    logger.error('Admin deleteTransfer error', { error: err.message });
+    logger.error('Admin deleteTransfer error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -698,7 +832,7 @@ const getPendingUsers = async (req, res) => {
     });
     return res.json({ count: users.length, users });
   } catch (err) {
-    logger.error('Admin getPendingUsers error', { error: err.message });
+    logger.error('Admin getPendingUsers error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -709,6 +843,7 @@ const approveUser = async (req, res) => {
     const user = await User.findByPk(id);
     if (!user) return res.status(404).json({ message: 'Utilisateur introuvable.' });
     if (user.isApproved) return res.status(400).json({ message: 'Ce compte est déjà approuvé.' });
+    if (!canManage(req.user, user)) return res.status(403).json({ message: forbiddenRoleMessage(req.user) });
 
     await user.update({ isApproved: true });
     logger.info('Admin approved user', { adminId: req.user.id, targetId: id, targetEmail: user.email });
@@ -717,12 +852,12 @@ const approveUser = async (req, res) => {
     try {
       await sendAccountApprovedEmail({ firstName: user.firstName, email: user.email });
     } catch (mailErr) {
-      logger.warn('Account approved email failed', { error: mailErr.message });
+      logger.warn('Account approved email failed', { ...errorDetails(mailErr) });
     }
 
     return res.json({ message: 'Compte approuvé.', user: { id: user.id, email: user.email } });
   } catch (err) {
-    logger.error('Admin approveUser error', { error: err.message });
+    logger.error('Admin approveUser error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -732,22 +867,26 @@ const rejectUser = async (req, res) => {
     const { id } = req.params;
     const user = await User.findByPk(id);
     if (!user) return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    // Le rejet (suppression définitive) ne concerne que les inscriptions en attente
+    if (user.isApproved) return res.status(400).json({ message: 'Ce compte n\'est pas en attente de validation.' });
+    if (!canManage(req.user, user)) return res.status(403).json({ message: forbiddenRoleMessage(req.user) });
 
     // Notifier l'utilisateur avant suppression (best-effort)
     try {
       await sendAccountRejectedEmail({ firstName: user.firstName, email: user.email });
     } catch (mailErr) {
-      logger.warn('Account rejected email failed', { error: mailErr.message });
+      logger.warn('Account rejected email failed', { ...errorDetails(mailErr) });
     }
 
-    await user.destroy();
+    // Inscription jamais validée : suppression définitive (pas de restauration)
+    await user.destroy({ force: true });
     logger.info('Admin rejected and deleted user', { adminId: req.user.id, targetId: id, targetEmail: user.email });
     return res.json({ message: 'Compte rejeté et supprimé.' });
   } catch (err) {
-    logger.error('Admin rejectUser error', { error: err.message });
+    logger.error('Admin rejectUser error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
 
-module.exports = { getStats, getStatsTimeseries, getStatsExtensions, getTopSenders, createUser, getUsers, getUserStats, updateUser, blockUser, deleteUser, getTransfers, getActiveTransfers, getAuditLogs, deleteTransfer, getPendingUsers, approveUser, rejectUser };
+module.exports = { getStats, getStatsTimeseries, getStatsExtensions, getTopSenders, createUser, getUsers, getUserStats, updateUser, blockUser, deleteUser, restoreUser, getTransfers, getActiveTransfers, getAuditLogs, blockTransfer, deleteTransfer, getPendingUsers, approveUser, rejectUser };
 

@@ -56,6 +56,17 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: false,
       },
+      // Blocage administrateur (non levable par l'expéditeur) — null = non bloqué
+      adminBlockedAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        defaultValue: null,
+      },
+      adminBlockedById: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        defaultValue: null,
+      },
       status: {
         type: DataTypes.ENUM('pending_scan', 'clean', 'infected', 'scan_failed'),
         allowNull: false,

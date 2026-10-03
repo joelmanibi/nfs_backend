@@ -14,14 +14,17 @@ const {
   updateUser,
   blockUser,
   deleteUser,
+  restoreUser,
   getTransfers,
   getActiveTransfers,
   getAuditLogs,
+  blockTransfer,
   deleteTransfer,
   getPendingUsers,
   approveUser,
   rejectUser,
 } = require('../controllers/adminController');
+const { getLogs, getLogsSummary, runHealthCheck } = require('../controllers/logsController');
 
 const router = Router();
 
@@ -34,26 +37,35 @@ router.get('/stats/timeseries', getStatsTimeseries);
 router.get('/stats/extensions', getStatsExtensions);
 router.get('/stats/top-senders', getTopSenders);
 
-// Users — création + lecture ouvertes aux deux rôles; modification/suppression réservées au SUPER_ADMIN
+// Users — hiérarchie vérifiée dans le contrôleur : SUPER_ADMIN gère les ADMIN, ADMIN gère les USER
+// (création, modification, blocage, suppression logique, restauration). Le SUPER_ADMIN peut en plus
+// basculer un compte ADMIN ↔ USER.
 router.post('/users',        createUser);
 router.get('/users',         getUsers);
 router.get('/users/:id/stats', getUserStats);
-router.patch('/users/:id',   checkRole('SUPER_ADMIN'), updateUser);
+router.patch('/users/:id',   updateUser);
 router.patch('/users/:id/block', blockUser);
-router.delete('/users/:id',  checkRole('SUPER_ADMIN'), deleteUser);
+router.delete('/users/:id',  deleteUser);
+router.patch('/users/:id/restore', restoreUser);
 
 // Transfers
 router.get('/transfers',         getTransfers);
 router.get('/transfers/active',  getActiveTransfers);
+router.patch('/transfers/:id/block', blockTransfer);
 router.delete('/transfers/:id',  checkRole('SUPER_ADMIN'), deleteTransfer);
 
 // Audit logs
 router.get('/audit', getAuditLogs);
 
-// Pending users — les deux rôles peuvent approuver/rejeter
-router.get('/users/pending',          getPendingUsers);
-router.patch('/users/:id/approve',    approveUser);
-router.delete('/users/:id/reject',    rejectUser);
+// Journaux techniques (diagnostic des intégrations et erreurs applicatives) — SUPER_ADMIN uniquement
+router.get('/logs',               checkRole('SUPER_ADMIN'), getLogs);
+router.get('/logs/summary',       checkRole('SUPER_ADMIN'), getLogsSummary);
+router.post('/logs/health-check', checkRole('SUPER_ADMIN'), runHealthCheck);
+
+// Pending users — inscriptions de comptes USER : gérées par les ADMIN uniquement
+router.get('/users/pending',          checkRole('ADMIN'), getPendingUsers);
+router.patch('/users/:id/approve',    checkRole('ADMIN'), approveUser);
+router.delete('/users/:id/reject',    checkRole('ADMIN'), rejectUser);
 
 module.exports = router;
 

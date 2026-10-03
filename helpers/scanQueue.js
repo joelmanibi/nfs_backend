@@ -3,6 +3,7 @@
 const { createClient } = require('redis');
 const logger = require('../config/logger');
 const { applyScanOutcomeToFiles, safeUnlink } = require('./uploadProcessing');
+const { errorDetails } = require('./errorDetails');
 
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 
@@ -41,7 +42,7 @@ const getClient = () => {
     const config = getQueueConfig();
     client = createClient({ url: config.redisUrl });
     client.on('error', (error) => {
-      logger.error('Redis connection error', { event: 'scan_queue_redis_error', error: error.message });
+      logger.error('Redis connection error', { event: 'scan_queue_redis_error', ...errorDetails(error) });
     });
   }
   return client;
@@ -151,7 +152,7 @@ const startScanWorker = async (processFn) => {
       logger.error('Scan job processing failed — left pending for retry', {
         event: 'scan_job_failed',
         messageId,
-        error: error.message,
+        ...errorDetails(error),
       });
     } finally {
       release();
@@ -177,7 +178,7 @@ const startScanWorker = async (processFn) => {
           }
         }
       } catch (error) {
-        logger.error('Scan queue read failed', { event: 'scan_queue_read_failed', error: error.message });
+        logger.error('Scan queue read failed', { event: 'scan_queue_read_failed', ...errorDetails(error) });
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
@@ -189,7 +190,7 @@ const startScanWorker = async (processFn) => {
       try {
         await reclaimStuckJobs(handleMessage);
       } catch (error) {
-        logger.error('Scan queue reclaim failed', { event: 'scan_queue_reclaim_failed', error: error.message });
+        logger.error('Scan queue reclaim failed', { event: 'scan_queue_reclaim_failed', ...errorDetails(error) });
       }
     }
   };

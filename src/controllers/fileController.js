@@ -13,6 +13,7 @@ const { scanAndEncrypt, sendFileArrivedEmails, safeUnlink } = require('../../hel
 const { getQueueConfig, enqueueScanJob }  = require('../../helpers/scanQueue');
 const { sendDownloadCodeEmail }           = require('../../helpers/mailer');
 const logger                              = require('../../config/logger');
+const { errorDetails } = require('../../helpers/errorDetails');
 
 // Statuts non téléchargeables + message associé (fileController + shareController).
 const NON_DOWNLOADABLE_STATUS = {
@@ -65,7 +66,7 @@ const resolveSenderFirstName = async (senderId, fallback = '—') => {
     const senderUser = await User.findByPk(senderId, { attributes: ['firstName'] });
     return senderUser?.firstName || fallback;
   } catch (lookupErr) {
-    logger.warn('Could not fetch sender firstName from DB, using fallback value', { error: lookupErr.message });
+    logger.warn('Could not fetch sender firstName from DB, using fallback value', { ...errorDetails(lookupErr) });
     return fallback;
   }
 };
@@ -90,7 +91,7 @@ const sendDownloadCodeEmails = async (createdRecords, normalizedDownloadCode, se
         event: 'file_download_code_email_failed',
         fileId: record.id,
         receiverEmail: record.receiverEmail,
-        error: mailError.message,
+        ...errorDetails(mailError),
       });
     }
   }
@@ -422,7 +423,7 @@ const uploadFile = async (req, res) => {
       logger.error('Scan job enqueue failed — rolling back upload', {
         event: 'scan_job_enqueue_failed',
         sharedFileId,
-        error: queueErr.message,
+        ...errorDetails(queueErr),
         enqueueDurationMs: Date.now() - enqueueStartedAt,
       });
       // Les ShareLink liés sont supprimés en cascade (FK onDelete CASCADE).
@@ -469,7 +470,7 @@ const uploadFile = async (req, res) => {
         logger.error('Encrypted upload cleanup failed', {
           event: 'file_upload_cleanup_failed',
           encryptedPath: encryptedDestPath,
-          error: cleanupError.message,
+          ...errorDetails(cleanupError),
         });
       }
     }
@@ -480,7 +481,7 @@ const uploadFile = async (req, res) => {
       logger.warn('Upload rejected', {
         event: 'file_upload_rejected',
         statusCode,
-        error: err.message,
+        ...errorDetails(err),
         durationMs: Date.now() - requestStartedAt,
         ...buildAuditMeta(req, {
           originalName: req.file?.originalname
@@ -493,7 +494,7 @@ const uploadFile = async (req, res) => {
 
     logger.error('Upload error', {
       event: 'file_upload_failed',
-      error: err.message,
+      ...errorDetails(err),
       durationMs: Date.now() - requestStartedAt,
       ...buildAuditMeta(req, {
         originalName: req.file?.originalname
@@ -548,6 +549,15 @@ const downloadFile = async (req, res) => {
         message: `Ce fichier a expiré le ${expiresAt.toLocaleDateString('fr-FR')}. Il a été supprimé automatiquement.`,
         expired: true,
       });
+    }
+
+    // Un administrateur a bloqué le fichier
+    if (file.adminBlockedAt) {
+      logger.warn('File download blocked by admin', {
+        event: 'file_download_admin_blocked',
+        ...buildAuditMeta(req, { fileId: id }),
+      });
+      return res.status(403).json({ message: 'Ce fichier a été bloqué par un administrateur.' });
     }
 
     // L'expéditeur a bloqué le fichier
@@ -653,7 +663,7 @@ const downloadFile = async (req, res) => {
   } catch (err) {
     logger.error('Download error', {
       event: 'file_download_failed',
-      error: err.message,
+      ...errorDetails(err),
       ...buildAuditMeta(req, { fileId: req.params?.id }),
     });
 
@@ -689,7 +699,7 @@ const getFileDetails = async (req, res) => {
 
     return res.json({ file });
   } catch (err) {
-    logger.error('getFileDetails error', { error: err.message });
+    logger.error('getFileDetails error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -705,13 +715,14 @@ const getInbox = async (req, res) => {
           model: User,
           as: 'sender',
           attributes: ['id', 'email', 'firstName', 'lastName', 'organisation'],
+          paranoid: false, // un expéditeur supprimé reste identifiable dans la boîte de réception
         },
       ],
       order: [['createdAt', 'DESC']],
     });
     return res.status(200).json({ count: files.length, files });
   } catch (err) {
-    logger.error('Inbox error', { error: err.message });
+    logger.error('Inbox error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };
@@ -726,7 +737,7 @@ const getSent = async (req, res) => {
     });
     return res.status(200).json({ count: files.length, files });
   } catch (err) {
-    logger.error('Sent error', { error: err.message });
+    logger.error('Sent error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };
@@ -740,6 +751,8 @@ const blockFile = async (req, res) => {
     if (!file) return res.status(404).json({ message: 'Fichier introuvable.' });
     if (file.senderId !== req.user.id)
       return res.status(403).json({ message: 'Accès refusé.' });
+    if (file.adminBlockedAt)
+      return res.status(403).json({ message: 'Ce fichier a été bloqué par un administrateur. Contactez un administrateur.' });
 
     file.isBlocked = !file.isBlocked;
     await file.save();
@@ -751,7 +764,7 @@ const blockFile = async (req, res) => {
 
     return res.json({ isBlocked: file.isBlocked });
   } catch (err) {
-    logger.error('blockFile error', { error: err.message });
+    logger.error('blockFile error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -780,7 +793,7 @@ const deleteFile = async (req, res) => {
     // Supprimer le fichier physique seulement si c'était le dernier lien vers lui
     if (siblingsCount <= 1 && fs.existsSync(encPath)) {
       try { fs.unlinkSync(encPath); } catch (e) {
-        logger.warn('Physical file deletion failed', { encPath, error: e.message });
+        logger.warn('Physical file deletion failed', { encPath, ...errorDetails(e) });
       }
     }
 
@@ -791,7 +804,7 @@ const deleteFile = async (req, res) => {
 
     return res.json({ message: 'Fichier supprimé.' });
   } catch (err) {
-    logger.error('deleteFile error', { error: err.message });
+    logger.error('deleteFile error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };

@@ -6,6 +6,7 @@ const { User }     = require('../models');
 const logger       = require('../../config/logger');
 const { buildRequestAuditMeta } = require('../../helpers/audit');
 const { createAuthToken, serializeAuthUser, setAuthTokenCookie } = require('../../helpers/authSession');
+const { errorDetails } = require('../../helpers/errorDetails');
 
 // ─── Config LDAP depuis .env ──────────────────────────────────────────────────
 // Contrôleur PAA : A-SRV-DC-01 — LDAPS port 636 — domaine paa.local
@@ -78,7 +79,17 @@ const loginWithLDAP = async (req, res) => {
     const normalizedEmail = adEmail.toLowerCase().trim();
 
     // ── 5. Trouver ou créer l'utilisateur en base (just-in-time provisioning) ──
-    let user = await User.findOne({ where: { email: normalizedEmail } });
+    // paranoid: false — ne pas re-provisionner un compte supprimé par un administrateur
+    let user = await User.findOne({ where: { email: normalizedEmail }, paranoid: false });
+
+    if (user?.deletedAt) {
+      logger.warn('LDAP login refused — account deleted', {
+        event: 'auth_ldap_deleted',
+        userId: user.id,
+        ...buildRequestAuditMeta(req),
+      });
+      return res.status(403).json({ deleted: true, message: 'Votre compte a été supprimé. Contactez un administrateur.' });
+    }
 
     if (!user) {
       user = await User.create({
@@ -139,7 +150,7 @@ const loginWithLDAP = async (req, res) => {
     logger.warn(isCredentialError ? 'LDAP login failed — bad credentials' : 'LDAP error', {
       event: isCredentialError ? 'auth_ldap_invalid_credentials' : 'auth_ldap_error',
       username: username.trim(),
-      error: err.message,
+      ...errorDetails(err),
       ...buildRequestAuditMeta(req),
     });
 

@@ -10,6 +10,7 @@ const { File, ShareLink, DownloadLog } = require('../models');
 const { createDecipherStream } = require('../../helpers/crypto');
 const { NON_DOWNLOADABLE_STATUS } = require('./fileController');
 const logger                   = require('../../config/logger');
+const { errorDetails } = require('../../helpers/errorDetails');
 
 const pipelineAsync  = promisify(pipeline);
 const ENCRYPTED_DIR  = path.resolve('assets', 'encrypted');
@@ -46,6 +47,10 @@ const createShareLink = async (req, res) => {
       return res.status(403).json({ message: 'Accès refusé.' });
     }
 
+    if (file.adminBlockedAt) {
+      return res.status(403).json({ message: 'Ce fichier a été bloqué par un administrateur.' });
+    }
+
     const token     = randomUUID().replace(/-/g, '');
     const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000);
 
@@ -64,7 +69,7 @@ const createShareLink = async (req, res) => {
       expiresAt: link.expiresAt,
     });
   } catch (err) {
-    logger.error('Share link creation failed', { error: err.message });
+    logger.error('Share link creation failed', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };
@@ -103,6 +108,16 @@ const downloadViaToken = async (req, res) => {
         message: `Ce fichier a expiré le ${fileExpiresAt.toLocaleDateString('fr-FR')}. Il a été supprimé automatiquement.`,
         expired: true,
       });
+    }
+
+    // Un administrateur a bloqué le fichier
+    if (file.adminBlockedAt) {
+      logger.warn('Public share download denied — blocked by admin', {
+        event: 'share_link_download_admin_blocked',
+        token,
+        fileId: file.id,
+      });
+      return res.status(403).json({ message: 'Ce fichier a été bloqué par un administrateur.' });
     }
 
     // L'expéditeur a bloqué le fichier
@@ -192,7 +207,7 @@ const downloadViaToken = async (req, res) => {
       fileId: file.id,
     });
   } catch (err) {
-    logger.error('Public share download failed', { error: err.message });
+    logger.error('Public share download failed', { ...errorDetails(err) });
     if (!res.headersSent) {
       return res.status(500).json({ message: 'Erreur interne.', error: err.message });
     }
@@ -210,7 +225,7 @@ const getShareLinkInfo = async (req, res) => {
 
     const link = await ShareLink.findOne({
       where: { token },
-      include: [{ model: File, as: 'file', attributes: ['originalName', 'size', 'isProtected', 'status', 'isBlocked'] }],
+      include: [{ model: File, as: 'file', attributes: ['originalName', 'size', 'isProtected', 'status', 'isBlocked', 'adminBlockedAt'] }],
     });
 
     if (!link) {
@@ -229,11 +244,12 @@ const getShareLinkInfo = async (req, res) => {
       size:         link.file.size,
       isProtected:  link.file.isProtected,
       status:       link.file.status,
-      isBlocked:    link.file.isBlocked,
+      isBlocked:    link.file.isBlocked || Boolean(link.file.adminBlockedAt),
+      blockedByAdmin: Boolean(link.file.adminBlockedAt),
       expiresAt:    link.expiresAt,
     });
   } catch (err) {
-    logger.error('Share link info failed', { error: err.message });
+    logger.error('Share link info failed', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };

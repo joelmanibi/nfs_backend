@@ -5,6 +5,7 @@ const path   = require('path');
 const { Op } = require('sequelize');
 const { File } = require('../src/models');
 const logger = require('../config/logger');
+const { errorDetails } = require('./errorDetails');
 
 const QUARANTINE_DIR = path.resolve('assets', 'quarantine');
 const TTL_MINUTES    = parseInt(process.env.QUARANTINE_TTL_MINUTES, 10) || 60;
@@ -68,7 +69,7 @@ const runQuarantineCleanup = async () => {
       logger.error('Quarantine stale file deletion failed', {
         event: 'quarantine_cleanup_delete_failed',
         file: entry,
-        error: error.message,
+        ...errorDetails(error),
       });
     }
   }

@@ -89,12 +89,26 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: false,
       },
+      deletedAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        defaultValue: null,
+      },
+      deletedById: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        defaultValue: null,
+      },
     },
     {
       sequelize,
       modelName: 'User',
       tableName: 'users',
       timestamps: true,
+      // Suppression logique : destroy() renseigne deletedAt au lieu d'effacer
+      // la ligne, et les requêtes excluent ces comptes par défaut
+      // (paranoid: false pour les inclure, restore() pour les réactiver).
+      paranoid: true,
     },
   );
 

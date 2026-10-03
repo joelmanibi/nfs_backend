@@ -20,6 +20,7 @@ const { decryptSecret } = require('./secretCrypto');
 const { scanBuffer } = require('./antivirus');
 const { sendFileReceivedEmail } = require('./mailer');
 const logger = require('../config/logger');
+const { errorDetails } = require('./errorDetails');
 
 const ENCRYPTED_DIR = path.resolve('assets', 'encrypted');
 const FTP_TLS_REJECT_UNAUTHORIZED = process.env.COLLECTION_FTPS_REJECT_UNAUTHORIZED !== 'false';
@@ -575,7 +576,7 @@ const distributeArchive = async ({ archiveBuffer, archiveName, config, recipient
         collectionConfigId: config.id,
         fileId: record.id,
         recipientEmail: recipient.email,
-        error: mailError.message,
+        ...errorDetails(mailError),
       });
     }
   }
@@ -751,7 +752,7 @@ const executeCollectionConfig = async (configId, { triggerType = 'MANUAL' } = {}
       collectionConfigId: config.id,
       executionId: execution.id,
       triggerType,
-      error: error.message,
+      ...errorDetails(error),
     });
 
     return sanitizeExecution(execution);
@@ -763,7 +764,7 @@ const executeCollectionConfig = async (configId, { triggerType = 'MANUAL' } = {}
         logger.warn('Collection remote client close failed', {
           event: 'collection_client_close_failed',
           collectionConfigId: config.id,
-          error: closeError.message,
+          ...errorDetails(closeError),
         });
       }
     }

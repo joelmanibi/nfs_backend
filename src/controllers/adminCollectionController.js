@@ -15,6 +15,7 @@ const {
   parseRequestQueryEntries,
 } = require('../../helpers/collectionExecution');
 const logger = require('../../config/logger');
+const { errorDetails } = require('../../helpers/errorDetails');
 
 const DEFAULT_PORTS = { SFTP: 22, FTP: 21, FTPS: 21, HTTP: 80, HTTPS: 443 };
 const SUPPORTED_PROTOCOLS = ['SFTP', 'FTP', 'FTPS', 'HTTP', 'HTTPS'];
@@ -344,7 +345,7 @@ const listCollectionConfigs = async (req, res) => {
       collections: rows.map((row) => sanitizeConfig(row, lastExecutionByConfig.get(row.id) || null)),
     });
   } catch (error) {
-    logger.error('Collection config list failed', { error: error.message });
+    logger.error('Collection config list failed', { ...errorDetails(error) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -356,7 +357,7 @@ const getCollectionConfig = async (req, res) => {
 
     return res.json({ collection: await loadConfigForResponse(config.id, { includeSecrets: true }) });
   } catch (error) {
-    logger.error('Collection config detail failed', { error: error.message });
+    logger.error('Collection config detail failed', { ...errorDetails(error) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -435,7 +436,7 @@ const createCollectionConfig = async (req, res) => {
       return res.status(error.statusCode).json({ message: error.message });
     }
 
-    logger.error('Collection config creation failed', { error: error.message });
+    logger.error('Collection config creation failed', { ...errorDetails(error) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -589,7 +590,7 @@ const updateCollectionConfig = async (req, res) => {
       return res.status(error.statusCode).json({ message: error.message });
     }
 
-    logger.error('Collection config update failed', { error: error.message });
+    logger.error('Collection config update failed', { ...errorDetails(error) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -607,7 +608,7 @@ const deleteCollectionConfig = async (req, res) => {
     });
     return res.json({ message: 'Configuration de collecte supprimée.' });
   } catch (error) {
-    logger.error('Collection config delete failed', { error: error.message });
+    logger.error('Collection config delete failed', { ...errorDetails(error) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -630,7 +631,7 @@ const runCollectionConfig = async (req, res) => {
       return res.status(error.statusCode).json({ message: error.message });
     }
 
-    logger.error('Collection manual run failed', { error: error.message });
+    logger.error('Collection manual run failed', { ...errorDetails(error) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };
@@ -652,7 +653,7 @@ const getCollectionExecutions = async (req, res) => {
       executions: rows.map(sanitizeExecution),
     });
   } catch (error) {
-    logger.error('Collection executions fetch failed', { error: error.message });
+    logger.error('Collection executions fetch failed', { ...errorDetails(error) });
     return res.status(500).json({ message: 'Erreur interne.' });
   }
 };

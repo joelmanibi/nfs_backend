@@ -9,6 +9,8 @@ const { runPurge }          = require('./helpers/purge');
 const { getQueueConfig, ensureConsumerGroup } = require('./helpers/scanQueue');
 const { runQuarantineCleanup } = require('./helpers/quarantineCleanup');
 const logger                = require('./config/logger');
+const { errorDetails }      = require('./helpers/errorDetails');
+const { registerProcessErrorHandlers } = require('./helpers/processErrors');
 
 function createApp() {
   const express = require('express');
@@ -43,9 +45,9 @@ function createApp() {
       event: isMulterError ? 'file_upload_multer_error' : 'unhandled_request_error',
       method: req.method,
       path: req.originalUrl,
-      error: err.message,
-      code: err.code,
-      stack: err.stack,
+      ...errorDetails(err),
+      userId: req.user?.id,
+      ip: req.ip,
     });
 
     if (res.headersSent) return next(err);
@@ -81,7 +83,7 @@ async function startServer() {
     } catch (error) {
       logger.error('[startup] Échec de préparation de la queue de scan antivirus', {
         event: 'scan_queue_setup_failed',
-        error: error.message,
+        ...errorDetails(error),
       });
     }
   }
@@ -112,7 +114,7 @@ async function startServer() {
       cron.schedule(purgeSchedule, () => {
         logger.info('[purge] Déclenchement planifié', { event: 'purge_scheduled_trigger' });
         runPurge().catch((err) =>
-          logger.error('[purge] Erreur non capturée', { event: 'purge_unhandled_error', error: err.message })
+          logger.error('[purge] Erreur non capturée', { event: 'purge_unhandled_error', ...errorDetails(err) })
         );
       }, { timezone: 'Africa/Abidjan' });
 
@@ -124,7 +126,7 @@ async function startServer() {
       const quarantineCleanupSchedule = process.env.QUARANTINE_CLEANUP_CRON || '*/15 * * * *';
       cron.schedule(quarantineCleanupSchedule, () => {
         runQuarantineCleanup().catch((err) =>
-          logger.error('[quarantine] Erreur non capturée', { event: 'quarantine_cleanup_unhandled_error', error: err.message })
+          logger.error('[quarantine] Erreur non capturée', { event: 'quarantine_cleanup_unhandled_error', ...errorDetails(err) })
         );
       }, { timezone: 'Africa/Abidjan' });
 
@@ -142,12 +144,15 @@ async function startServer() {
 }
 
 if (require.main === module) {
+  registerProcessErrorHandlers('api');
   startServer().catch((error) => {
     console.error(`[startup] ${error.message}`);
     if (error.stack) {
       console.error(error.stack);
     }
-    process.exit(1);
+    // Trace aussi l'échec de démarrage (DB, Vault, migrations…) dans les journaux
+    logger.error('[startup] Échec du démarrage du serveur', { event: 'server_startup_failed', ...errorDetails(error) });
+    setTimeout(() => process.exit(1), 500);
   });
 }
 

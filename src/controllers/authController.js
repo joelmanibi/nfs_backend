@@ -13,6 +13,7 @@ const {
   setAuthTokenCookie,
 } = require('../../helpers/authSession');
 const { sendOTPEmail, sendPasswordResetEmail } = require('../../helpers/mailer');
+const { errorDetails } = require('../../helpers/errorDetails');
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const OTP_EXPIRY_MS        = 1 * 60 * 1000;   // 1 min
@@ -91,7 +92,15 @@ const register = async (req, res) => {
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
     // ── Doublon email ──────────────────────────────────────────────────────────
-    const exists = await User.findOne({ where: { email: normalizedEmail } });
+    // paranoid: false — un compte supprimé (logiquement) garde son email
+    const exists = await User.findOne({ where: { email: normalizedEmail }, paranoid: false });
+    if (exists?.deletedAt) {
+      logger.warn('Registration rejected for deleted account email', {
+        event: 'auth_register_deleted_account',
+        ...buildAuthMeta(req),
+      });
+      return res.status(409).json({ message: 'Cet email est associé à un compte supprimé. Contactez un administrateur.' });
+    }
     if (exists) {
       logger.warn('Registration rejected for duplicate email', {
         event: 'auth_register_duplicate_email',
@@ -134,7 +143,7 @@ const register = async (req, res) => {
         isInternalUser: user.isInternalUser,
       });
     } catch (mailErr) {
-      logger.warn('Pending account notification email failed', { error: mailErr.message });
+      logger.warn('Pending account notification email failed', { ...errorDetails(mailErr) });
     }
 
     return res.status(201).json({
@@ -145,7 +154,7 @@ const register = async (req, res) => {
   } catch (err) {
     logger.error('Registration failed', {
       event: 'auth_register_failed',
-      error: err.message,
+      ...errorDetails(err),
       ...buildAuthMeta(req, { firstName: firstName?.trim(), lastName: lastName?.trim() }),
     });
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
@@ -230,7 +239,7 @@ const requestOTP = async (req, res) => {
   } catch (err) {
     logger.error('OTP request failed', {
       event: 'auth_otp_request_failed',
-      error: err.message,
+      ...errorDetails(err),
       ...buildAuthMeta(req),
     });
 
@@ -357,7 +366,7 @@ const verifyOTP = async (req, res) => {
   } catch (err) {
     logger.error('Authentication flow failed', {
       event: 'auth_authentication_failed',
-      error: err.message,
+      ...errorDetails(err),
       ...buildAuthMeta(req),
     });
 
@@ -430,7 +439,7 @@ const loginWithPassword = async (req, res) => {
       message: 'Mot de passe vérifié. Un code OTP a été envoyé à votre adresse email.',
     });
   } catch (err) {
-    logger.error('Password login error', { event: 'auth_password_login_failed', error: err.message });
+    logger.error('Password login error', { event: 'auth_password_login_failed', ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };
@@ -466,14 +475,14 @@ const forgotPassword = async (req, res) => {
     try {
       await sendPasswordResetEmail({ to: normalizedEmail, firstName: user.firstName, resetUrl, expiryMinutes: 30 });
     } catch (mailErr) {
-      logger.error('Password reset email failed', { event: 'auth_reset_email_failed', error: mailErr.message });
+      logger.error('Password reset email failed', { event: 'auth_reset_email_failed', ...errorDetails(mailErr) });
     }
 
     logger.info('Password reset requested', { event: 'auth_reset_requested', ...buildAuthMeta(req) });
 
     return res.status(200).json({ message: 'Si cet email existe, un lien de réinitialisation vous a été envoyé.' });
   } catch (err) {
-    logger.error('Forgot password error', { error: err.message });
+    logger.error('Forgot password error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };
@@ -524,7 +533,7 @@ const resetPassword = async (req, res) => {
     logger.info('Password reset succeeded', { event: 'auth_reset_succeeded', ...buildAuthMeta(req) });
     return res.status(200).json({ message: 'Mot de passe réinitialisé avec succès.' });
   } catch (err) {
-    logger.error('Reset password error', { error: err.message });
+    logger.error('Reset password error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };
@@ -573,7 +582,7 @@ const changePassword = async (req, res) => {
     logger.info('Password changed', { event: 'auth_password_changed', userId: user.id });
     return res.status(200).json({ message: 'Mot de passe mis à jour avec succès.' });
   } catch (err) {
-    logger.error('Change password error', { error: err.message });
+    logger.error('Change password error', { ...errorDetails(err) });
     return res.status(500).json({ message: 'Erreur interne.', error: err.message });
   }
 };
@@ -592,7 +601,7 @@ const getMe = async (req, res) => {
   } catch (err) {
     logger.error('Get current user error', {
       event: 'auth_me_failed',
-      error: err.message,
+      ...errorDetails(err),
       ...buildRequestAuditMeta(req),
     });
 

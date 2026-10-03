@@ -3,6 +3,7 @@
 const nodemailer = require('nodemailer');
 const logger = require('../config/logger');
 const { normalizeEmail } = require('./audit');
+const { errorDetails } = require('./errorDetails');
 
 const APP_NAME = 'PAA Secure Transport';
 
@@ -124,7 +125,7 @@ const sendMail = async (message, logContext = {}) => {
     logger.error('Email send failed', {
       event: 'email_send_failed',
       ...logMeta,
-      error: error.message,
+      ...errorDetails(error),
       durationMs: Date.now() - startedAt,
     });
 

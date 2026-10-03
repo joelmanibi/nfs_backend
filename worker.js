@@ -4,6 +4,8 @@ const { loadVaultSecrets } = require('./config/vault');
 const { getQueueConfig, ensureConsumerGroup, startScanWorker } = require('./helpers/scanQueue');
 const { processScanJob } = require('./helpers/uploadProcessing');
 const logger = require('./config/logger');
+const { errorDetails } = require('./helpers/errorDetails');
+const { registerProcessErrorHandlers } = require('./helpers/processErrors');
 
 /**
  * Processus dédié au scan antivirus + chiffrement des fichiers uploadés.
@@ -35,12 +37,14 @@ async function startWorker() {
 }
 
 if (require.main === module) {
+  registerProcessErrorHandlers('worker');
   startWorker().catch((error) => {
     console.error(`[worker] ${error.message}`);
     if (error.stack) {
       console.error(error.stack);
     }
-    process.exit(1);
+    logger.error('[worker] Échec du démarrage du worker', { event: 'worker_startup_failed', ...errorDetails(error) });
+    setTimeout(() => process.exit(1), 500);
   });
 }
 

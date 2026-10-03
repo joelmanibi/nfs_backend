@@ -2,6 +2,7 @@
 
 const cron = require('node-cron');
 const logger = require('../config/logger');
+const { errorDetails } = require('./errorDetails');
 
 const DEFAULT_TIMEZONE = process.env.COLLECTION_SCHEDULER_TIMEZONE || 'Africa/Abidjan';
 const runningConfigs = new Set();
@@ -112,7 +113,7 @@ const runDueCollections = async () => {
         logger.error('Collection scheduled execution failed', {
           event: 'collection_schedule_failed',
           collectionConfigId: config.id,
-          error: error.message,
+          ...errorDetails(error),
         });
       })
       .finally(() => {
@@ -128,7 +129,7 @@ const startCollectionScheduler = () => {
     runDueCollections().catch((error) => {
       logger.error('Collection scheduler tick failed', {
         event: 'collection_scheduler_tick_failed',
-        error: error.message,
+        ...errorDetails(error),
       });
     });
   }, { timezone: DEFAULT_TIMEZONE });
