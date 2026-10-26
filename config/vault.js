@@ -1,10 +1,15 @@
 'use strict';
 
-require('dotenv').config();
+const path = require('path');
+// .env du backend, quel que soit le dossier depuis lequel le process est lancé
+// (API, worker PM2, scripts de migration) — sinon chaque process peut lire un
+// .env différent, ou aucun.
+require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 
 const http = require('http');
 const https = require('https');
 const logger = require('./logger');
+const { CRITICAL_KEYS } = require('./secrets');
 
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 
@@ -212,23 +217,51 @@ async function loadVaultSecrets() {
     }
 
     const loadedKeys = [];
+    const overriddenKeys = [];
 
     for (const [key, value] of Object.entries(secrets)) {
-      if (!config.overrideExisting && process.env[key] !== undefined) {
+      const normalized = normalizeSecretValue(value);
+      if (normalized === undefined) continue;
+
+      // Les secrets critiques viennent TOUJOURS de Vault quand il est activé,
+      // même si VAULT_OVERRIDE_EXISTING=false : une ancienne valeur restée dans
+      // un .env ne doit jamais faire utiliser une autre clé selon le process.
+      const isCritical = CRITICAL_KEYS.includes(key);
+      if (!isCritical && !config.overrideExisting && process.env[key] !== undefined) {
         continue;
       }
 
-      const normalized = normalizeSecretValue(value);
-      if (normalized === undefined) continue;
+      if (isCritical && process.env[key] !== undefined && process.env[key] !== normalized) {
+        overriddenKeys.push(key);
+      }
 
       process.env[key] = normalized;
       loadedKeys.push(key);
     }
 
+    // SECRET_CONFIG est le nom historique de la clé JWT dans Vault : alias vers
+    // JWT_SECRET si Vault ne fournit pas directement JWT_SECRET.
+    if (secrets.SECRET_CONFIG && !secrets.JWT_SECRET) {
+      if (process.env.JWT_SECRET !== undefined && process.env.JWT_SECRET !== process.env.SECRET_CONFIG) {
+        overriddenKeys.push('JWT_SECRET');
+      }
+      process.env.JWT_SECRET = process.env.SECRET_CONFIG;
+    }
+
+    if (overriddenKeys.length) {
+      logger.warn('Valeurs du .env ignorées : remplacées par celles de Vault.', {
+        event: 'vault_env_value_overridden',
+        keys: overriddenKeys,
+        hint: 'Retirer ces clés du .env : en production elles doivent provenir uniquement de Vault.',
+      });
+    }
+
     logger.info('Secrets Vault chargés avec succès.', {
       event: 'vault_secrets_loaded',
       secretPath: config.secretPath,
+      authMethod: config.token ? 'token' : 'approle',
       loadedKeyCount: loadedKeys.length,
+      loadedKeys, // noms uniquement, jamais les valeurs
     });
 
     return {

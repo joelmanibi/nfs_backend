@@ -1,6 +1,6 @@
 'use strict';
 
-require('dotenv').config();
+require('dotenv').config({ path: require('path').resolve(__dirname, '..', '..', '.env') });
 const { v4: uuidv4 } = require('uuid');
 
 /** @type {import('sequelize-cli').Migration} */

@@ -1,6 +1,7 @@
 'use strict';
 
 const { loadVaultSecrets } = require('./config/vault');
+const { assertCriticalSecrets } = require('./config/secrets');
 const { getQueueConfig, ensureConsumerGroup, startScanWorker } = require('./helpers/scanQueue');
 const { processScanJob } = require('./helpers/uploadProcessing');
 const logger = require('./config/logger');
@@ -16,7 +17,9 @@ const { registerProcessErrorHandlers } = require('./helpers/processErrors');
  * avec le process API.
  */
 async function startWorker() {
-  await loadVaultSecrets();
+  const vault = await loadVaultSecrets();
+  // Le worker chiffre les fichiers : il lui faut la même FILE_ENCRYPTION_KEY que l'API
+  assertCriticalSecrets({ processName: 'worker', requireJwt: false, vault });
 
   const queueConfig = getQueueConfig();
   if (!queueConfig.enabled) {

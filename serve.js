@@ -2,6 +2,7 @@
 
 const cron                  = require('node-cron');
 const { loadVaultSecrets }  = require('./config/vault');
+const { assertCriticalSecrets } = require('./config/secrets');
 const { runMigrations }     = require('./helpers/runMigrations');
 const { startCollectionScheduler } = require('./helpers/collectionScheduler');
 const { runStartupChecks }  = require('./helpers/startupChecks');
@@ -60,7 +61,8 @@ function createApp() {
 }
 
 async function startServer() {
-  await loadVaultSecrets();
+  const vault = await loadVaultSecrets();
+  assertCriticalSecrets({ processName: 'api', vault });
   await runMigrations();
 
   // ── Vérifications de connectivité au démarrage ────────────────────────────
