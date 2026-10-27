@@ -36,20 +36,33 @@ module.exports = {
     logging: false,
     timezone: '+00:00',
   },
+  // Base de production PAA : MySQL (comme en dev). DB_DIALECT permet de
+  // basculer sur un autre moteur sans modifier le code (ex. DB_DIALECT=postgres,
+  // qui nécessite alors le paquet npm `pg`).
   production: {
     username: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
     host: process.env.DB_HOST,
-    port: process.env.DB_PORT || 5432,
-    dialect: 'postgres',
+    port: process.env.DB_PORT || 3306,
+    dialect: process.env.DB_DIALECT || 'mysql',
     logging: false,
+    timezone: '+00:00',
     pool: {
       max: 10,
       min: 2,
       acquire: 30000,
       idle: 10000,
     },
+    dialectOptions: (process.env.DB_DIALECT || 'mysql') === 'mysql' ? {
+      // mysql2 v3 : TINYINT(1) → boolean (même réglage qu'en dev)
+      typeCast: function (field, next) {
+        if (field.type === 'TINY' && field.length === 1) {
+          return field.string() === '1';
+        }
+        return next();
+      },
+    } : {},
   //  dialectOptions: {
     //  ssl: {
     //    require: true,
